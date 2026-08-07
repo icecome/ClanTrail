@@ -28,6 +28,7 @@ web/uploads
 *.log
 build-android*.log
 .last_build_log
+.history/
 
 # ===== Android 工具链（本地安装，重新下载成本高）=====
 android-sdk
