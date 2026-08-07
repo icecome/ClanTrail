@@ -1,0 +1,52 @@
+# ===== Rust (cargo) =====
+# 构建产物（可 `cargo build` 重现，体积大）
+/target
+**/target
+# Cargo.lock 保留（应用工程需锁定依赖）
+
+# ===== Node / 前端 (web/) =====
+web/node_modules
+**/node_modules
+web/dist
+# Tauri 自动生成的 Android 工程（可 `tauri android init` 重现）
+web/src-tauri/gen
+
+# ===== 环境变量（可能含本地配置）=====
+web/.env
+web/.env.*
+!web/.env.example
+
+# ===== 运行时数据 =====
+# SQLite 数据库（运行时生成）
+*.db
+*.db-shm
+*.db-wal
+# 用户上传目录
+/uploads
+web/uploads
+# 运行/构建日志
+*.log
+build-android*.log
+.last_build_log
+
+# ===== Android 工具链（本地安装，重新下载成本高）=====
+android-sdk
+
+# ===== 本地保留的构建产物（不入库）=====
+/apk
+
+# ===== 临时/诊断/安装器 =====
+.tools
+*.timestamp-*.mjs
+diag*.png
+diag*.mjs
+
+# ===== IDE / OS =====
+.idea
+.vscode
+*.swp
+.DS_Store
+Thumbs.db
+
+# ===== WorkBuddy =====
+# .workbuddy 为项目数据目录，保留，不忽略也不提交
