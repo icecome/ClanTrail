@@ -1,86 +1,147 @@
-import { Routes, Route, NavLink } from 'react-router-dom';
-import FamilyListPage from './pages/FamilyListPage';
-import FamilyDetailPage from './pages/FamilyDetailPage';
-import TombDetailPage from './pages/TombDetailPage';
+import type { ReactNode } from 'react';
+import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
+import ClanListPage from './pages/ClanListPage';
+import ClanDetailPage from './pages/ClanDetailPage';
+import GraveDetailPage from './pages/GraveDetailPage';
 import RemindersPage from './pages/RemindersPage';
 import MapPage from './pages/MapPage';
-import AddTombPage from './pages/AddTombPage';
+import AddGravePage from './pages/AddGravePage';
 import SettingsPage from './pages/SettingsPage';
-import PersonFormPage from './pages/PersonFormPage';
+import MemberFormPage from './pages/MemberFormPage';
+import MemberDetailPage from './pages/MemberDetailPage';
+import BackupPage from './pages/BackupPage';
+import PrivacyPage from './pages/PrivacyPage';
+import GpsPage from './pages/GpsPage';
+import AboutPage from './pages/AboutPage';
+import MemberListPage from './pages/MemberListPage';
+import MemberDirectPage from './pages/MemberDirectPage';
+import GraphPage from './pages/GraphPage';
 import { ToastProvider } from './components/Toast';
 
-function FamilyIcon() {
+// ---------- 线性图标（设计系统 24 图标集子集） ----------
+function HomeIcon() {
   return (
-    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 11l8-7 8 7" />
+      <path d="M6 10v9h12v-9" />
+      <path d="M10 19v-5h4v5" />
     </svg>
   );
 }
 
-function BellIcon() {
+function TimeIcon() {
   return (
-    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="13" r="7" />
+      <path d="M12 9v4l3 2" />
+      <path d="M5 4h14" />
     </svg>
   );
 }
+
+function MapIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 4l6 2 6-2v14l-6 2-6-2-6 2V6l6-2z" />
+      <path d="M9 4v14M15 6v14" />
+    </svg>
+  );
+}
+
+function UserIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="8" r="3.4" />
+      <path d="M5.5 19a6.5 6.5 0 0113 0" />
+    </svg>
+  );
+}
+
+interface TabDef {
+  path: string;
+  label: string;
+  icon: () => ReactNode;
+  // 该 Tab 处于激活态时匹配的路径前缀
+  activePrefixes: string[];
+}
+
+const TABS: TabDef[] = [
+  { path: '/', label: '家族', icon: HomeIcon, activePrefixes: ['/', '/clans', '/grave'] },
+  { path: '/reminders', label: '时序', icon: TimeIcon, activePrefixes: ['/reminders'] },
+  { path: '/map', label: '地图', icon: MapIcon, activePrefixes: ['/map'] },
+  { path: '/settings', label: '我的', icon: UserIcon, activePrefixes: ['/settings'] },
+];
 
 export default function App() {
-  const navLinkClass = ({ isActive }: { isActive: boolean }) =>
-    `px-3.5 py-1.5 rounded-md text-sm no-underline transition-colors ${
-      isActive ? 'bg-[#e8f3ff] text-[#165dff] font-medium' : 'text-[#4e5969] hover:bg-[#f2f3f5]'
-    }`;
+  const location = useLocation();
+  const navigate = useNavigate();
+  // 子流程（新建/编辑墓地、人物表单、选点、地图全屏预览）不显示底栏
+  const isSubFlow =
+    location.pathname === '/grave/new' ||
+    /^\/grave\/[^/]+\/edit$/.test(location.pathname) ||
+    /^\/grave\/[^/]+\/member\//.test(location.pathname) ||
+    /^\/member\//.test(location.pathname) ||
+    /^\/clans\/[^/]+\/(members|graph)$/.test(location.pathname) ||
+    (location.pathname === '/map' && location.search.includes('mode=select')) ||
+    /^\/settings\/(backup|privacy|gps|about)$/.test(location.pathname) ||
+    (location.pathname === '/map' && (location.search.includes('graveId=') || location.search.includes('view=full')));
 
-  const tabLinkClass = ({ isActive }: { isActive: boolean }) =>
-    `flex flex-col items-center justify-center gap-0.5 py-1 px-4 no-underline ${
-      isActive ? 'text-[#165dff]' : 'text-[#86909c]'
-    }`;
+  const activeTab = (() => {
+    const path = location.pathname;
+    if (path.startsWith('/reminders')) return 1;
+    if (path.startsWith('/map')) return 2;
+    if (path.startsWith('/settings')) return 3;
+    return 0;
+  })();
 
   return (
     <ToastProvider>
-      <div className="flex flex-col h-full">
-        {/* 桌面端顶部导航 (md+) */}
-        <nav className="hidden md:flex items-center justify-between h-[52px] px-5 bg-white border-b border-[#e5e6eb] shrink-0">
-          <div className="text-base font-medium text-[#1f2329]">家族墓地档案</div>
-          <div className="flex gap-2">
-            <NavLink to="/" end className={navLinkClass}>
-              家族
-            </NavLink>
-            <NavLink to="/reminders" className={navLinkClass}>
-              提醒
-            </NavLink>
-            <NavLink to="/map" className={navLinkClass}>
-              地图
-            </NavLink>
-          </div>
-        </nav>
-
-        {/* 主内容区 */}
-        <main className="flex-1 overflow-auto max-md:pb-16">
+      <div className="app-shell">
+        <main className="main-content">
           <Routes>
-            <Route path="/" element={<FamilyListPage />} />
-            <Route path="/families/:id" element={<FamilyDetailPage />} />
-            <Route path="/tomb/new" element={<AddTombPage />} />
-            <Route path="/tomb/:id/edit" element={<AddTombPage />} />
-            <Route path="/tomb/:id" element={<TombDetailPage />} />
-            <Route path="/tomb/:id/person/:pid" element={<PersonFormPage />} />
+            <Route path="/" element={<ClanListPage />} />
+            <Route path="/clans/:id" element={<ClanDetailPage />} />
+            <Route path="/clans/:id/members" element={<MemberListPage />} />
+            <Route path="/clans/:id/graph" element={<GraphPage />} />
+            <Route path="/graph/:memberId" element={<GraphPage />} />
+            <Route path="/member/:pid/view" element={<MemberDirectPage />} />
+            <Route path="/member/:pid/edit" element={<MemberFormPage />} />
+            <Route path="/grave/new" element={<AddGravePage />} />
+            <Route path="/grave/:id/edit" element={<AddGravePage />} />
+            <Route path="/grave/:id" element={<GraveDetailPage />} />
+            <Route path="/grave/:id/member/:pid" element={<MemberFormPage />} />
+            <Route path="/grave/:id/member/:pid/view" element={<MemberDetailPage />} />
             <Route path="/reminders" element={<RemindersPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/settings/backup" element={<BackupPage />} />
+            <Route path="/settings/privacy" element={<PrivacyPage />} />
+            <Route path="/settings/gps" element={<GpsPage />} />
+            <Route path="/settings/about" element={<AboutPage />} />
             <Route path="/map" element={<MapPage />} />
           </Routes>
         </main>
 
-        {/* 移动端底部 Tab Bar (max-md) */}
-        <nav className="md:hidden fixed bottom-0 inset-x-0 z-50 bg-white border-t border-[#e5e6eb] flex items-center justify-around h-14 pb-[env(safe-area-inset-bottom,0)]">
-          <NavLink to="/" end className={tabLinkClass}>
-            <FamilyIcon />
-            <span className="text-[10px]">家族</span>
-          </NavLink>
-          <NavLink to="/reminders" className={tabLinkClass}>
-            <BellIcon />
-            <span className="text-[10px]">提醒</span>
-          </NavLink>
-        </nav>
+        {/* 移动端玻璃态底栏：家族 / 时序 / 地图 / 我的 */}
+        {!isSubFlow && (
+          <nav className="tab-bar">
+            {TABS.map((t, i) => {
+              const Icon = t.icon;
+              const active = activeTab === i;
+              return (
+                <div
+                  key={t.path}
+                  className={`tab-item ${active ? 'active' : ''}`}
+                  onClick={() => navigate(t.path, { replace: true })}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <Icon />
+                  <span>{t.label}</span>
+                </div>
+              );
+            })}
+          </nav>
+        )}
       </div>
     </ToastProvider>
   );

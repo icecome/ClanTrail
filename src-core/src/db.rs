@@ -3,12 +3,18 @@ use crate::models::*;
 use chrono::Datelike;
 use rusqlite::{params, Connection, OptionalExtension};
 
+/// 内嵌 SQL 迁移（refinery），从 src-core/migrations 编译期嵌入
+mod embedded {
+    use refinery::embed_migrations;
+    embed_migrations!("migrations");
+}
+
 /// 本地 SQLite 数据库封装，离线优先的数据源
-pub struct TombKeeperDb {
+pub struct ClanTrailDb {
     conn: Connection,
 }
 
-impl TombKeeperDb {
+impl ClanTrailDb {
     /// 打开（或创建）数据库文件
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
@@ -29,9 +35,11 @@ impl TombKeeperDb {
         .is_some();
         if !can_write_journal {
             conn.execute_batch("PRAGMA journal_mode = MEMORY;")?;
+        } else {
+            conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
         }
 
-        let db = Self { conn };
+        let mut db = Self { conn };
         db.initialize()?;
         Ok(db)
     }
@@ -40,7 +48,7 @@ impl TombKeeperDb {
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        let db = Self { conn };
+        let mut db = Self { conn };
         db.initialize()?;
         Ok(db)
     }
@@ -55,101 +63,49 @@ impl TombKeeperDb {
     }
 
     /// 重新打开指定路径的数据库文件，替换当前连接。
+    /// 导入备份后调用：自动跑迁移，兼容旧版本备份（refinery 幂等）。
     pub fn reopen(&mut self, path: &str) -> Result<()> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
         self.conn = conn;
+        self.initialize()?;
         Ok(())
     }
 
-    fn initialize(&self) -> Result<()> {
-        self.conn.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS families (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                description TEXT,
-                origin      TEXT,
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
-            );
+    /// 创建一致的数据库快照文件（使用 VACUUM INTO，SQLite 3.27+）。
+    /// 导出备份时使用此方法，避免直接拷贝运行中库带来的不一致问题。
+    pub fn create_backup_snapshot(&self, dest_path: &str) -> Result<()> {
+        // VACUUM INTO 不支持参数化，但 dest_path 来源于受控路径（临时目录），安全。
+        let sql = format!("VACUUM INTO '{}'", dest_path.replace('\'', "''"));
+        self.conn.execute_batch(&sql)?;
+        Ok(())
+    }
 
-            CREATE TABLE IF NOT EXISTS tomb_groups (
-                id          TEXT PRIMARY KEY,
-                family_id   TEXT NOT NULL REFERENCES families(id) ON DELETE CASCADE,
-                name        TEXT NOT NULL,
-                description TEXT,
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS tombs (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                latitude    REAL NOT NULL,
-                longitude   REAL NOT NULL,
-                address     TEXT,
-                description TEXT,
-                group_id    TEXT REFERENCES tomb_groups(id) ON DELETE SET NULL,
-                family_id   TEXT REFERENCES families(id) ON DELETE SET NULL,
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS persons (
-                id              TEXT PRIMARY KEY,
-                tomb_id         TEXT NOT NULL REFERENCES tombs(id) ON DELETE CASCADE,
-                name            TEXT NOT NULL,
-                title           TEXT,
-                birth_date      TEXT,
-                death_date      TEXT,
-                biography       TEXT,
-                epitaph         TEXT,
-                spouse          TEXT,
-                is_joint_burial INTEGER NOT NULL DEFAULT 0,
-                children        TEXT,
-                order_index     INTEGER NOT NULL DEFAULT 0,
-                created_at      TEXT NOT NULL,
-                updated_at      TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS photos (
-                id          TEXT PRIMARY KEY,
-                entity_type TEXT NOT NULL,
-                entity_id   TEXT NOT NULL,
-                file_path   TEXT NOT NULL,
-                caption     TEXT,
-                is_cover    INTEGER NOT NULL DEFAULT 0,
-                created_at  TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS relations (
-                id                TEXT PRIMARY KEY,
-                person_id         TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
-                related_person_id TEXT NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
-                relation_type     TEXT NOT NULL,
-                created_at        TEXT NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_tombs_group   ON tombs(group_id);
-            CREATE INDEX IF NOT EXISTS idx_tombs_family  ON tombs(family_id);
-            CREATE INDEX IF NOT EXISTS idx_persons_tomb  ON persons(tomb_id);
-            CREATE INDEX IF NOT EXISTS idx_photos_entity ON photos(entity_type, entity_id);
-            CREATE INDEX IF NOT EXISTS idx_relations_person ON relations(person_id);
-            CREATE INDEX IF NOT EXISTS idx_relations_related ON relations(related_person_id);
-            "#,
-        )?;
-
-        // 兼容老库：缺失的列逐个 ALTER TABLE 补上
+    fn initialize(&mut self) -> Result<()> {
+        // 兼容老库：members 表早期版本缺少 spouse/is_joint_burial/children 列，
+        // 先确保这些列存在，使 refinery V1（CREATE IF NOT EXISTS）对已有表安全。
         self.migrate_add_columns()?;
+
+        // 运行 refinery 迁移（V1 初始 schema、V2 同步列、V3 Edge.side 等）
+        embedded::migrations::runner().run(&mut self.conn)?;
         Ok(())
     }
 
-    /// 轻量级迁移：仅处理 persons 表新增列
+    /// 轻量级迁移：仅处理 members 表新增列（老库兼容）
     fn migrate_add_columns(&self) -> Result<()> {
+        // 新库由 refinery V1 建全表；仅当 members 表已存在（老库）时才需补列
+        let table_exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='members')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(());
+        }
         // pragma table_info 返回 (cid, name, type, notnull, dflt_value, pk)
         let mut stmt = self.conn
-            .prepare("PRAGMA table_info(persons)")?;
+            .prepare("PRAGMA table_info(members)")?;
         let existing: std::collections::HashSet<String> = stmt
             .query_map([], |row| row.get::<_, String>(1))?
             .collect::<std::result::Result<_, _>>()?;
@@ -161,7 +117,7 @@ impl TombKeeperDb {
         ];
         for (col, decl) in to_add {
             if !existing.contains(*col) {
-                let sql = format!("ALTER TABLE persons ADD COLUMN {col} {decl}");
+                let sql = format!("ALTER TABLE members ADD COLUMN {col} {decl}");
                 self.conn.execute_batch(&sql)?;
             }
         }
@@ -169,121 +125,162 @@ impl TombKeeperDb {
     }
 
     // -----------------------------------------------------------------------
-    // Family 家族
+    // Clan 家族
     // -----------------------------------------------------------------------
-    pub fn create_family(&self, input: NewFamily) -> Result<Family> {
+    pub fn create_clan(&self, input: NewClan) -> Result<Clan> {
         let now = now_iso();
-        let family = Family {
+        let clan = Clan {
             id: new_uuid(),
             name: input.name,
             description: input.description,
             origin: input.origin,
             created_at: now.clone(),
             updated_at: now,
+            version: 1,
+            deleted: false,
         };
         self.conn.execute(
-            "INSERT INTO families (id, name, description, origin, created_at, updated_at)
+            "INSERT INTO clans (id, name, description, origin, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
-                family.id,
-                family.name,
-                family.description,
-                family.origin,
-                family.created_at,
-                family.updated_at
+                clan.id,
+                clan.name,
+                clan.description,
+                clan.origin,
+                clan.created_at,
+                clan.updated_at
             ],
         )?;
-        Ok(family)
+        Ok(clan)
     }
 
-    pub fn get_family(&self, id: &str) -> Result<Family> {
+    pub fn get_clan(&self, id: &str) -> Result<Clan> {
         self.conn
             .query_row(
-                "SELECT id, name, description, origin, created_at, updated_at
-                 FROM families WHERE id = ?1",
+                "SELECT id, name, description, origin, created_at, updated_at, version, deleted
+                 FROM clans WHERE id = ?1",
                 params![id],
                 |row| {
-                    Ok(Family {
+                    Ok(Clan {
                         id: row.get(0)?,
                         name: row.get(1)?,
                         description: row.get(2)?,
                         origin: row.get(3)?,
                         created_at: row.get(4)?,
                         updated_at: row.get(5)?,
+                        version: row.get(6)?,
+                        deleted: row.get(7)?,
                     })
                 },
             )
             .optional()?
-            .ok_or_else(|| AppError::NotFound(format!("family {id}")))
+            .ok_or_else(|| AppError::NotFound(format!("clan {id}")))
     }
 
-    pub fn list_families(&self) -> Result<Vec<Family>> {
+    pub fn list_clans(&self) -> Result<Vec<Clan>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, description, origin, created_at, updated_at
-             FROM families ORDER BY name",
+            "SELECT id, name, description, origin, created_at, updated_at, version, deleted
+             FROM clans ORDER BY name",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok(Family {
+            Ok(Clan {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 description: row.get(2)?,
                 origin: row.get(3)?,
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
+                version: row.get(6)?,
+                deleted: row.get(7)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
-    pub fn update_family(
+    pub fn update_clan(
         &self,
         id: &str,
         name: Option<String>,
         description: Option<String>,
         origin: Option<String>,
-    ) -> Result<Family> {
-        let current = self.get_family(id)?;
+    ) -> Result<Clan> {
+        let current = self.get_clan(id)?;
         let new_name = name.unwrap_or(current.name);
         let new_desc = description.or(current.description);
         let new_origin = origin.or(current.origin);
         let now = now_iso();
         self.conn.execute(
-            "UPDATE families SET name = ?1, description = ?2, origin = ?3, updated_at = ?4 WHERE id = ?5",
+            "UPDATE clans SET name = ?1, description = ?2, origin = ?3, updated_at = ?4, version = version + 1 WHERE id = ?5",
             params![new_name, new_desc, new_origin, now, id],
         )?;
-        self.get_family(id)
+        self.get_clan(id)
     }
 
-    pub fn delete_family(&self, id: &str) -> Result<()> {
-        let n = self.conn.execute("DELETE FROM families WHERE id = ?1", params![id])?;
+    /// 删除家族并级联清理其子级（墓组、墓地、墓主、关系、照片）。
+    /// 墓地归属的墓组仅解除关联，不删除墓地本身。
+    pub fn delete_clan(&self, id: &str) -> Result<()> {
+        // 不使用事务（self.conn 不可变借用），依次执行 DELETE
+        // 墓组下的墓地解除墓组归属（墓地仍归家族所有）
+        self.conn.execute(
+            "UPDATE graves SET burial_group_id = NULL WHERE burial_group_id IN (SELECT id FROM burial_groups WHERE clan_id = ?1)",
+            params![id],
+        )?;
+        // 墓地照片
+        self.conn.execute(
+            "DELETE FROM images WHERE entity_type = 'grave' AND entity_id IN (SELECT id FROM graves WHERE clan_id = ?1)",
+            params![id],
+        )?;
+        // 墓主照片（含在世成员照片）
+        self.conn.execute(
+            "DELETE FROM images WHERE entity_type = 'member' AND entity_id IN (SELECT id FROM members WHERE grave_id IN (SELECT id FROM graves WHERE clan_id = ?1) OR clan_id = ?1)",
+            params![id],
+        )?;
+        // 墓主关系（含指向被删墓主的反向关系）
+        self.conn.execute(
+            "DELETE FROM edges WHERE member_id IN (SELECT id FROM members WHERE grave_id IN (SELECT id FROM graves WHERE clan_id = ?1) OR clan_id = ?1) OR related_member_id IN (SELECT id FROM members WHERE grave_id IN (SELECT id FROM graves WHERE clan_id = ?1) OR clan_id = ?1)",
+            params![id],
+        )?;
+        // 墓主 + 在世成员
+        self.conn.execute(
+            "DELETE FROM members WHERE grave_id IN (SELECT id FROM graves WHERE clan_id = ?1) OR clan_id = ?1",
+            params![id],
+        )?;
+        // 墓地
+        self.conn.execute("DELETE FROM graves WHERE clan_id = ?1", params![id])?;
+        // 墓组
+        self.conn.execute("DELETE FROM burial_groups WHERE clan_id = ?1", params![id])?;
+        // 家族照片
+        self.conn.execute("DELETE FROM images WHERE entity_type = 'clan' AND entity_id = ?1", params![id])?;
+        // 家族
+        let n = self.conn.execute("DELETE FROM clans WHERE id = ?1", params![id])?;
         if n == 0 {
-            return Err(AppError::NotFound(format!("family {id}")));
+            return Err(AppError::NotFound(format!("clan {id}")));
         }
         Ok(())
     }
 
     // -----------------------------------------------------------------------
-    // TombGroup 墓组
+    // BurialGroup 墓组
     // -----------------------------------------------------------------------
-    pub fn create_tomb_group(&self, input: NewTombGroup) -> Result<TombGroup> {
+    pub fn create_burial_group(&self, input: NewBurialGroup) -> Result<BurialGroup> {
         // 校验家族存在
-        self.get_family(&input.family_id)?;
+        self.get_clan(&input.clan_id)?;
         let now = now_iso();
-        let group = TombGroup {
+        let group = BurialGroup {
             id: new_uuid(),
-            family_id: input.family_id,
+            clan_id: input.clan_id,
             name: input.name,
             description: input.description,
             created_at: now.clone(),
             updated_at: now,
         };
         self.conn.execute(
-            "INSERT INTO tomb_groups (id, family_id, name, description, created_at, updated_at)
+            "INSERT INTO burial_groups (id, clan_id, name, description, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 group.id,
-                group.family_id,
+                group.clan_id,
                 group.name,
                 group.description,
                 group.created_at,
@@ -293,10 +290,10 @@ impl TombKeeperDb {
         Ok(group)
     }
 
-    fn row_to_tomb_group(row: &rusqlite::Row<'_>) -> rusqlite::Result<TombGroup> {
-        Ok(TombGroup {
+    fn row_to_burial_group(row: &rusqlite::Row<'_>) -> rusqlite::Result<BurialGroup> {
+        Ok(BurialGroup {
             id: row.get(0)?,
-            family_id: row.get(1)?,
+            clan_id: row.get(1)?,
             name: row.get(2)?,
             description: row.get(3)?,
             created_at: row.get(4)?,
@@ -304,142 +301,151 @@ impl TombKeeperDb {
         })
     }
 
-    pub fn get_tomb_group(&self, id: &str) -> Result<TombGroup> {
+    pub fn get_burial_group(&self, id: &str) -> Result<BurialGroup> {
         self.conn
             .query_row(
-                "SELECT id, family_id, name, description, created_at, updated_at
-                 FROM tomb_groups WHERE id = ?1",
+                "SELECT id, clan_id, name, description, created_at, updated_at
+                 FROM burial_groups WHERE id = ?1",
                 params![id],
-                Self::row_to_tomb_group,
+                Self::row_to_burial_group,
             )
             .optional()?
-            .ok_or_else(|| AppError::NotFound(format!("tomb_group {id}")))
+            .ok_or_else(|| AppError::NotFound(format!("burial_group {id}")))
     }
 
-    pub fn list_groups_by_family(&self, family_id: &str) -> Result<Vec<TombGroup>> {
+    pub fn list_groups_by_clan(&self, clan_id: &str) -> Result<Vec<BurialGroup>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, family_id, name, description, created_at, updated_at
-             FROM tomb_groups WHERE family_id = ?1 ORDER BY name",
+            "SELECT id, clan_id, name, description, created_at, updated_at
+             FROM burial_groups WHERE clan_id = ?1 ORDER BY name",
         )?;
-        let rows = stmt.query_map(params![family_id], Self::row_to_tomb_group)?;
+        let rows = stmt.query_map(params![clan_id], Self::row_to_burial_group)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
-    pub fn delete_tomb_group(&self, id: &str) -> Result<()> {
-        let n = self.conn.execute("DELETE FROM tomb_groups WHERE id = ?1", params![id])?;
+    /// 删除墓组：墓地下属归家族所有，仅解除其墓组归属，不删除墓地本身。
+    pub fn delete_burial_group(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE graves SET burial_group_id = NULL WHERE burial_group_id = ?1",
+            params![id],
+        )?;
+        let n = self.conn.execute("DELETE FROM burial_groups WHERE id = ?1", params![id])?;
         if n == 0 {
-            return Err(AppError::NotFound(format!("tomb_group {id}")));
+            return Err(AppError::NotFound(format!("burial_group {id}")));
         }
         Ok(())
     }
 
     // -----------------------------------------------------------------------
-    // Tomb 单墓地
+    // Grave 单墓地
     // -----------------------------------------------------------------------
-    pub fn create_tomb(&self, input: NewTomb) -> Result<Tomb> {
+    pub fn create_grave(&self, input: NewGrave) -> Result<Grave> {
         if input.latitude < -90.0 || input.latitude > 90.0 {
             return Err(AppError::InvalidInput("latitude out of range".into()));
         }
         if input.longitude < -180.0 || input.longitude > 180.0 {
             return Err(AppError::InvalidInput("longitude out of range".into()));
         }
-        if let Some(fid) = &input.family_id {
-            self.get_family(fid)?;
+        if let Some(fid) = &input.clan_id {
+            self.get_clan(fid)?;
         }
-        if let Some(gid) = &input.group_id {
-            self.get_tomb_group(gid)?;
+        if let Some(gid) = &input.burial_group_id {
+            self.get_burial_group(gid)?;
         }
         let now = now_iso();
-        let tomb = Tomb {
+        let grave = Grave {
             id: new_uuid(),
             name: input.name,
             latitude: input.latitude,
             longitude: input.longitude,
             address: input.address,
             description: input.description,
-            group_id: input.group_id,
-            family_id: input.family_id,
+            burial_group_id: input.burial_group_id,
+            clan_id: input.clan_id,
             created_at: now.clone(),
             updated_at: now,
+            version: 1,
+            deleted: false,
         };
         self.conn.execute(
-            "INSERT INTO tombs (id, name, latitude, longitude, address, description, group_id, family_id, created_at, updated_at)
+            "INSERT INTO graves (id, name, latitude, longitude, address, description, burial_group_id, clan_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
-                tomb.id,
-                tomb.name,
-                tomb.latitude,
-                tomb.longitude,
-                tomb.address,
-                tomb.description,
-                tomb.group_id,
-                tomb.family_id,
-                tomb.created_at,
-                tomb.updated_at
+                grave.id,
+                grave.name,
+                grave.latitude,
+                grave.longitude,
+                grave.address,
+                grave.description,
+                grave.burial_group_id,
+                grave.clan_id,
+                grave.created_at,
+                grave.updated_at
             ],
         )?;
-        Ok(tomb)
+        Ok(grave)
     }
 
-    fn row_to_tomb(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tomb> {
-        Ok(Tomb {
+    fn row_to_grave(row: &rusqlite::Row<'_>) -> rusqlite::Result<Grave> {
+        Ok(Grave {
             id: row.get(0)?,
             name: row.get(1)?,
             latitude: row.get(2)?,
             longitude: row.get(3)?,
             address: row.get(4)?,
             description: row.get(5)?,
-            group_id: row.get(6)?,
-            family_id: row.get(7)?,
+            burial_group_id: row.get(6)?,
+            clan_id: row.get(7)?,
             created_at: row.get(8)?,
             updated_at: row.get(9)?,
+            version: row.get(10)?,
+            deleted: row.get(11)?,
         })
     }
 
-    pub fn get_tomb(&self, id: &str) -> Result<Tomb> {
+    pub fn get_grave(&self, id: &str) -> Result<Grave> {
         self.conn
             .query_row(
-                "SELECT id, name, latitude, longitude, address, description, group_id, family_id, created_at, updated_at
-                 FROM tombs WHERE id = ?1",
+                "SELECT id, name, latitude, longitude, address, description, burial_group_id, clan_id, created_at, updated_at, version, deleted
+                 FROM graves WHERE id = ?1",
                 params![id],
-                Self::row_to_tomb,
+                Self::row_to_grave,
             )
             .optional()?
-            .ok_or_else(|| AppError::NotFound(format!("tomb {id}")))
+            .ok_or_else(|| AppError::NotFound(format!("grave {id}")))
     }
 
-    pub fn list_tombs(&self) -> Result<Vec<Tomb>> {
+    pub fn list_graves(&self) -> Result<Vec<Grave>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, latitude, longitude, address, description, group_id, family_id, created_at, updated_at
-             FROM tombs ORDER BY name",
+            "SELECT id, name, latitude, longitude, address, description, burial_group_id, clan_id, created_at, updated_at, version, deleted
+             FROM graves ORDER BY name",
         )?;
-        let rows = stmt.query_map([], Self::row_to_tomb)?;
+        let rows = stmt.query_map([], Self::row_to_grave)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
-    pub fn list_tombs_by_family(&self, family_id: &str) -> Result<Vec<Tomb>> {
+    pub fn list_graves_by_clan(&self, clan_id: &str) -> Result<Vec<Grave>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, latitude, longitude, address, description, group_id, family_id, created_at, updated_at
-             FROM tombs WHERE family_id = ?1 ORDER BY name",
+            "SELECT id, name, latitude, longitude, address, description, burial_group_id, clan_id, created_at, updated_at, version, deleted
+             FROM graves WHERE clan_id = ?1 ORDER BY name",
         )?;
-        let rows = stmt.query_map(params![family_id], Self::row_to_tomb)?;
+        let rows = stmt.query_map(params![clan_id], Self::row_to_grave)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
-    pub fn list_tombs_by_group(&self, group_id: &str) -> Result<Vec<Tomb>> {
+    pub fn list_graves_by_group(&self, burial_group_id: &str) -> Result<Vec<Grave>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, latitude, longitude, address, description, group_id, family_id, created_at, updated_at
-             FROM tombs WHERE group_id = ?1 ORDER BY name",
+            "SELECT id, name, latitude, longitude, address, description, burial_group_id, clan_id, created_at, updated_at, version, deleted
+             FROM graves WHERE burial_group_id = ?1 ORDER BY name",
         )?;
-        let rows = stmt.query_map(params![group_id], Self::row_to_tomb)?;
+        let rows = stmt.query_map(params![burial_group_id], Self::row_to_grave)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
-    pub fn update_tomb(
+    pub fn update_grave(
         &self,
         id: &str,
         name: Option<String>,
@@ -447,43 +453,69 @@ impl TombKeeperDb {
         longitude: Option<f64>,
         address: Option<String>,
         description: Option<String>,
-        group_id: Option<String>,
-        family_id: Option<String>,
-    ) -> Result<Tomb> {
-        let current = self.get_tomb(id)?;
+        burial_group_id: Option<String>,
+        clan_id: Option<String>,
+    ) -> Result<Grave> {
+        let current = self.get_grave(id)?;
         let new_name = name.unwrap_or(current.name);
         let new_lat = latitude.unwrap_or(current.latitude);
         let new_lng = longitude.unwrap_or(current.longitude);
         let new_addr = address.or(current.address);
         let new_desc = description.or(current.description);
-        let new_group = group_id.or(current.group_id);
-        let new_family = family_id.or(current.family_id);
+        let new_group = burial_group_id.or(current.burial_group_id);
+        let new_clan = clan_id.or(current.clan_id);
         let now = now_iso();
         self.conn.execute(
-            "UPDATE tombs SET name = ?1, latitude = ?2, longitude = ?3, address = ?4, description = ?5,
-             group_id = ?6, family_id = ?7, updated_at = ?8 WHERE id = ?9",
-            params![new_name, new_lat, new_lng, new_addr, new_desc, new_group, new_family, now, id],
+            "UPDATE graves SET name = ?1, latitude = ?2, longitude = ?3, address = ?4, description = ?5,
+             burial_group_id = ?6, clan_id = ?7, updated_at = ?8, version = version + 1 WHERE id = ?9",
+            params![new_name, new_lat, new_lng, new_addr, new_desc, new_group, new_clan, now, id],
         )?;
-        self.get_tomb(id)
+        self.get_grave(id)
     }
 
-    pub fn delete_tomb(&self, id: &str) -> Result<()> {
-        let n = self.conn.execute("DELETE FROM tombs WHERE id = ?1", params![id])?;
+    /// 删除墓地并级联清理其子级（墓主、关系、照片）。
+    pub fn delete_grave(&self, id: &str) -> Result<()> {
+        // 墓主照片
+        self.conn.execute(
+            "DELETE FROM images WHERE entity_type = 'member' AND entity_id IN (SELECT id FROM members WHERE grave_id = ?1)",
+            params![id],
+        )?;
+        // 墓主关系（含指向被删墓主的反向关系）
+        self.conn.execute(
+            "DELETE FROM edges WHERE member_id IN (SELECT id FROM members WHERE grave_id = ?1) OR related_member_id IN (SELECT id FROM members WHERE grave_id = ?1)",
+            params![id],
+        )?;
+        // 墓主
+        self.conn.execute("DELETE FROM members WHERE grave_id = ?1", params![id])?;
+        // 墓地照片
+        self.conn.execute(
+            "DELETE FROM images WHERE entity_type = 'grave' AND entity_id = ?1",
+            params![id],
+        )?;
+        // 墓地
+        let n = self.conn.execute("DELETE FROM graves WHERE id = ?1", params![id])?;
         if n == 0 {
-            return Err(AppError::NotFound(format!("tomb {id}")));
+            return Err(AppError::NotFound(format!("grave {id}")));
         }
         Ok(())
     }
 
     // -----------------------------------------------------------------------
-    // Person 墓主
+    // Member 墓主
     // -----------------------------------------------------------------------
-    pub fn create_person(&self, input: NewPerson) -> Result<Person> {
-        self.get_tomb(&input.tomb_id)?;
+    pub fn create_member(&self, input: NewMember) -> Result<Member> {
+        // 校验归属：有墓则校验墓存在；无墓（在世）则校验族存在
+        if let Some(gid) = &input.grave_id {
+            self.get_grave(gid)?;
+        }
+        if let Some(cid) = &input.clan_id {
+            self.get_clan(cid)?;
+        }
         let now = now_iso();
-        let person = Person {
+        let member = Member {
             id: new_uuid(),
-            tomb_id: input.tomb_id,
+            grave_id: input.grave_id,
+            clan_id: input.clan_id,
             name: input.name,
             title: input.title,
             birth_date: input.birth_date,
@@ -493,78 +525,90 @@ impl TombKeeperDb {
             spouse: input.spouse,
             is_joint_burial: input.is_joint_burial,
             children: input.children,
+            is_alive: input.is_alive,
             order_index: input.order_index,
             created_at: now.clone(),
             updated_at: now,
+            version: 1,
+            deleted: false,
         };
         self.conn.execute(
-            "INSERT INTO persons (id, tomb_id, name, title, birth_date, death_date, biography, epitaph, spouse, is_joint_burial, children, order_index, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO members (id, grave_id, clan_id, name, title, birth_date, death_date, biography, epitaph, spouse, is_joint_burial, children, is_alive, order_index, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
-                person.id,
-                person.tomb_id,
-                person.name,
-                person.title,
-                person.birth_date,
-                person.death_date,
-                person.biography,
-                person.epitaph,
-                person.spouse,
-                person.is_joint_burial as i32,
-                person.children,
-                person.order_index,
-                person.created_at,
-                person.updated_at
+                member.id,
+                member.grave_id,
+                member.clan_id,
+                member.name,
+                member.title,
+                member.birth_date,
+                member.death_date,
+                member.biography,
+                member.epitaph,
+                member.spouse,
+                member.is_joint_burial as i32,
+                member.children,
+                member.is_alive as i32,
+                member.order_index,
+                member.created_at,
+                member.updated_at
             ],
         )?;
-        Ok(person)
+        Ok(member)
     }
 
-    fn row_to_person(row: &rusqlite::Row<'_>) -> rusqlite::Result<Person> {
-        Ok(Person {
+    fn row_to_member(row: &rusqlite::Row<'_>) -> rusqlite::Result<Member> {
+        Ok(Member {
             id: row.get(0)?,
-            tomb_id: row.get(1)?,
-            name: row.get(2)?,
-            title: row.get(3)?,
-            birth_date: row.get(4)?,
-            death_date: row.get(5)?,
-            biography: row.get(6)?,
-            epitaph: row.get(7)?,
-            spouse: row.get(8)?,
+            grave_id: row.get(1)?,
+            clan_id: row.get(2)?,
+            name: row.get(3)?,
+            title: row.get(4)?,
+            birth_date: row.get(5)?,
+            death_date: row.get(6)?,
+            biography: row.get(7)?,
+            epitaph: row.get(8)?,
+            spouse: row.get(9)?,
             is_joint_burial: {
-                let v: i64 = row.get(9)?;
+                let v: i64 = row.get(10)?;
                 v != 0
             },
-            children: row.get(10)?,
-            order_index: row.get(11)?,
-            created_at: row.get(12)?,
-            updated_at: row.get(13)?,
+            children: row.get(11)?,
+            is_alive: {
+                let v: i64 = row.get(12)?;
+                v != 0
+            },
+            order_index: row.get(13)?,
+            created_at: row.get(14)?,
+            updated_at: row.get(15)?,
+            version: row.get(16)?,
+            deleted: row.get(17)?,
         })
     }
 
-    pub fn list_persons_by_tomb(&self, tomb_id: &str) -> Result<Vec<Person>> {
+    pub fn list_members_by_grave(&self, grave_id: &str) -> Result<Vec<Member>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, tomb_id, name, title, birth_date, death_date, biography, epitaph, spouse, is_joint_burial, children, order_index, created_at, updated_at
-             FROM persons WHERE tomb_id = ?1 ORDER BY order_index, name",
+            "SELECT id, grave_id, clan_id, name, title, birth_date, death_date, biography, epitaph, spouse, is_joint_burial, children, is_alive, order_index, created_at, updated_at, version, deleted
+             FROM members WHERE grave_id = ?1 ORDER BY order_index, name",
         )?;
-        let rows = stmt.query_map(params![tomb_id], Self::row_to_person)?;
+        let rows = stmt.query_map(params![grave_id], Self::row_to_member)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
-    pub fn get_person(&self, id: &str) -> Result<Person> {
+    pub fn get_member(&self, id: &str) -> Result<Member> {
         self.conn
             .query_row(
-                "SELECT id, tomb_id, name, title, birth_date, death_date, biography, epitaph, spouse, is_joint_burial, children, order_index, created_at, updated_at
-                 FROM persons WHERE id = ?1",
+                "SELECT id, grave_id, clan_id, name, title, birth_date, death_date, biography, epitaph, spouse, is_joint_burial, children, is_alive, order_index, created_at, updated_at, version, deleted
+                 FROM members WHERE id = ?1",
                 params![id],
-                Self::row_to_person,
+                Self::row_to_member,
             )
             .optional()?
-            .ok_or_else(|| AppError::NotFound(format!("person {id}")))
+            .ok_or_else(|| AppError::NotFound(format!("member {id}")))
     }
 
-    pub fn update_person(
+    pub fn update_member(
         &self,
         id: &str,
         name: Option<String>,
@@ -577,8 +621,10 @@ impl TombKeeperDb {
         is_joint_burial: Option<bool>,
         children: Option<String>,
         order_index: Option<i32>,
-    ) -> Result<Person> {
-        let current = self.get_person(id)?;
+        clan_id: Option<String>,
+        is_alive: Option<bool>,
+    ) -> Result<Member> {
+        let current = self.get_member(id)?;
         let new_name = name.unwrap_or(current.name);
         let new_title = title.or(current.title);
         let new_birth = birth_date.or(current.birth_date);
@@ -589,32 +635,45 @@ impl TombKeeperDb {
         let new_joint = is_joint_burial.unwrap_or(current.is_joint_burial);
         let new_children = children.or(current.children);
         let new_order = order_index.unwrap_or(current.order_index);
+        let new_clan = clan_id.or(current.clan_id);
+        let new_alive = is_alive.unwrap_or(current.is_alive);
         let now = now_iso();
         self.conn.execute(
-            "UPDATE persons SET name = ?1, title = ?2, birth_date = ?3, death_date = ?4, biography = ?5,
-             epitaph = ?6, spouse = ?7, is_joint_burial = ?8, children = ?9, order_index = ?10, updated_at = ?11
-             WHERE id = ?12",
+            "UPDATE members SET name = ?1, title = ?2, birth_date = ?3, death_date = ?4, biography = ?5,
+             epitaph = ?6, spouse = ?7, is_joint_burial = ?8, children = ?9, order_index = ?10,
+             clan_id = ?11, is_alive = ?12, updated_at = ?13, version = version + 1
+             WHERE id = ?14",
             params![
                 new_name, new_title, new_birth, new_death, new_bio, new_epitaph,
-                new_spouse, new_joint as i32, new_children, new_order, now, id
+                new_spouse, new_joint as i32, new_children, new_order,
+                new_clan, new_alive as i32, now, id
             ],
         )?;
-        self.get_person(id)
+        self.get_member(id)
     }
 
-    pub fn delete_person(&self, id: &str) -> Result<()> {
-        let n = self.conn.execute("DELETE FROM persons WHERE id = ?1", params![id])?;
+    /// 删除墓主并清理其照片与关系（含指向该墓主的反向关系）。
+    pub fn delete_member(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM images WHERE entity_type = 'member' AND entity_id = ?1",
+            params![id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM edges WHERE member_id = ?1 OR related_member_id = ?1",
+            params![id],
+        )?;
+        let n = self.conn.execute("DELETE FROM members WHERE id = ?1", params![id])?;
         if n == 0 {
-            return Err(AppError::NotFound(format!("person {id}")));
+            return Err(AppError::NotFound(format!("member {id}")));
         }
         Ok(())
     }
 
     // -----------------------------------------------------------------------
-    // Photo 照片
+    // Image 照片
     // -----------------------------------------------------------------------
-    pub fn add_photo(&self, input: NewPhoto) -> Result<Photo> {
-        let photo = Photo {
+    pub fn add_image(&self, input: NewImage) -> Result<Image> {
+        let image = Image {
             id: new_uuid(),
             entity_type: input.entity_type.as_str().to_string(),
             entity_id: input.entity_id,
@@ -622,32 +681,34 @@ impl TombKeeperDb {
             caption: input.caption,
             is_cover: input.is_cover,
             created_at: now_iso(),
+            version: 1,
+            deleted: false,
         };
         self.conn.execute(
-            "INSERT INTO photos (id, entity_type, entity_id, file_path, caption, is_cover, created_at)
+            "INSERT INTO images (id, entity_type, entity_id, file_path, caption, is_cover, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
-                photo.id,
-                photo.entity_type,
-                photo.entity_id,
-                photo.file_path,
-                photo.caption,
-                photo.is_cover,
-                photo.created_at
+                image.id,
+                image.entity_type,
+                image.entity_id,
+                image.file_path,
+                image.caption,
+                image.is_cover,
+                image.created_at
             ],
         )?;
-        Ok(photo)
+        Ok(image)
     }
 
     /// 按 ID 取单张照片（删除时用于定位物理文件）
-    pub fn get_photo(&self, id: &str) -> Result<Photo> {
+    pub fn get_image(&self, id: &str) -> Result<Image> {
         self.conn
             .query_row(
-                "SELECT id, entity_type, entity_id, file_path, caption, is_cover, created_at
-                 FROM photos WHERE id = ?1",
+                "SELECT id, entity_type, entity_id, file_path, caption, is_cover, created_at, version, deleted
+                 FROM images WHERE id = ?1",
                 params![id],
                 |row| {
-                    Ok(Photo {
+                    Ok(Image {
                         id: row.get(0)?,
                         entity_type: row.get(1)?,
                         entity_id: row.get(2)?,
@@ -655,20 +716,22 @@ impl TombKeeperDb {
                         caption: row.get(4)?,
                         is_cover: row.get(5)?,
                         created_at: row.get(6)?,
+                        version: row.get(7)?,
+                        deleted: row.get(8)?,
                     })
                 },
             )
             .optional()?
-            .ok_or_else(|| AppError::NotFound(format!("photo {id}")))
+            .ok_or_else(|| AppError::NotFound(format!("image {id}")))
     }
 
-    pub fn list_photos_by_entity(&self, entity_type: EntityType, entity_id: &str) -> Result<Vec<Photo>> {
+    pub fn list_images_by_entity(&self, entity_type: EntityType, entity_id: &str) -> Result<Vec<Image>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, entity_type, entity_id, file_path, caption, is_cover, created_at
-             FROM photos WHERE entity_type = ?1 AND entity_id = ?2 ORDER BY created_at",
+            "SELECT id, entity_type, entity_id, file_path, caption, is_cover, created_at, version, deleted
+             FROM images WHERE entity_type = ?1 AND entity_id = ?2 ORDER BY created_at",
         )?;
         let rows = stmt.query_map(params![entity_type.as_str(), entity_id], |row| {
-            Ok(Photo {
+            Ok(Image {
                 id: row.get(0)?,
                 entity_type: row.get(1)?,
                 entity_id: row.get(2)?,
@@ -676,30 +739,32 @@ impl TombKeeperDb {
                 caption: row.get(4)?,
                 is_cover: row.get(5)?,
                 created_at: row.get(6)?,
+                version: row.get(7)?,
+                deleted: row.get(8)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
-    pub fn delete_photo(&self, id: &str) -> Result<()> {
-        let n = self.conn.execute("DELETE FROM photos WHERE id = ?1", params![id])?;
+    pub fn delete_image(&self, id: &str) -> Result<()> {
+        let n = self.conn.execute("DELETE FROM images WHERE id = ?1", params![id])?;
         if n == 0 {
-            return Err(AppError::NotFound(format!("photo {id}")));
+            return Err(AppError::NotFound(format!("image {id}")));
         }
         Ok(())
     }
 
-    /// 更新照片封面标记（把同实体的其他封面清除）
-    pub fn set_photo_cover(&self, id: &str, is_cover: bool) -> Result<Photo> {
-        let photo = self
+    /// 更新照片封面标记（原子操作：单条 SQL 完成同实体封面切换）
+    pub fn set_image_cover(&self, id: &str, is_cover: bool) -> Result<Image> {
+        let image = self
             .conn
             .query_row(
-                "SELECT id, entity_type, entity_id, file_path, caption, is_cover, created_at
-                 FROM photos WHERE id = ?1",
+                "SELECT id, entity_type, entity_id, file_path, caption, is_cover, created_at, version, deleted
+                 FROM images WHERE id = ?1",
                 params![id],
                 |row| {
-                    Ok(Photo {
+                    Ok(Image {
                         id: row.get(0)?,
                         entity_type: row.get(1)?,
                         entity_id: row.get(2)?,
@@ -707,127 +772,269 @@ impl TombKeeperDb {
                         caption: row.get(4)?,
                         is_cover: row.get(5)?,
                         created_at: row.get(6)?,
+                        version: row.get(7)?,
+                        deleted: row.get(8)?,
                     })
                 },
             )
             .optional()?
-            .ok_or_else(|| AppError::NotFound(format!("photo {id}")))?;
+            .ok_or_else(|| AppError::NotFound(format!("image {id}")))?;
 
+        // 原子操作：同实体其他照片 is_cover = 0，目标照片按需设置
         if is_cover {
-            // 同一实体的其他照片封面标记清零
             self.conn.execute(
-                "UPDATE photos SET is_cover = 0 WHERE entity_type = ?1 AND entity_id = ?2 AND id != ?3",
-                params![photo.entity_type, photo.entity_id, id],
+                "UPDATE images SET is_cover = (id = ?1), version = version + 1 WHERE entity_type = ?2 AND entity_id = ?3",
+                params![id, image.entity_type, image.entity_id],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE images SET is_cover = 0, version = version + 1 WHERE id = ?1",
+                params![id],
             )?;
         }
-        self.conn
-            .execute("UPDATE photos SET is_cover = ?1 WHERE id = ?2", params![is_cover as i32, id])?;
-        self.list_photos_by_entity(
-            EntityType::from_str(&photo.entity_type).ok_or_else(|| {
-                AppError::General(format!("unknown entity_type {}", photo.entity_type))
+
+        self.list_images_by_entity(
+            EntityType::from_str(&image.entity_type).ok_or_else(|| {
+                AppError::General(format!("unknown entity_type {}", image.entity_type))
             })?,
-            &photo.entity_id,
+            &image.entity_id,
         )?
         .into_iter()
         .find(|p| p.id == id)
-        .ok_or_else(|| AppError::NotFound(format!("photo {id}")))
+        .ok_or_else(|| AppError::NotFound(format!("image {id}")))
     }
 
     // -----------------------------------------------------------------------
-    // Relation 人物关系
+    // Edge 人物关系
     // -----------------------------------------------------------------------
-    /// 创建关系（自动创建反向关系，保证双向一致性）
-    pub fn create_relation(&self, input: NewRelation) -> Result<Vec<Relation>> {
+    /// 创建关系。spouse 双向对称；son/daughter 只存单方向（父/母 → 子/女），反向由查询推导。
+    pub fn create_edge(&mut self, input: NewEdge) -> Result<Vec<Edge>> {
         // 校验两个人物都存在
-        self.get_person(&input.person_id)?;
-        self.get_person(&input.related_person_id)?;
-        if input.person_id == input.related_person_id {
+        self.get_member(&input.member_id)?;
+        self.get_member(&input.related_member_id)?;
+        if input.member_id == input.related_member_id {
             return Err(AppError::InvalidInput("cannot create self-relation".into()));
         }
+        let now = now_iso();
+        let rtype = input.relation_type.as_str().to_string();
+        let id = new_uuid();
+
         // 检查是否已存在相同关系
         let exists: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM relations WHERE person_id = ?1 AND related_person_id = ?2 AND relation_type = ?3",
-            params![input.person_id, input.related_person_id, input.relation_type.as_str()],
+            "SELECT COUNT(*) FROM edges WHERE member_id = ?1 AND related_member_id = ?2 AND relation_type = ?3",
+            params![input.member_id, input.related_member_id, input.relation_type.as_str()],
             |row| row.get(0),
         )?;
         if exists > 0 {
             return Err(AppError::InvalidInput("relation already exists".into()));
         }
-        let now = now_iso();
-        let rtype = input.relation_type.as_str().to_string();
-        let rev_type = input.relation_type.reverse().as_str().to_string();
-        let id = new_uuid();
-        let rev_id = new_uuid();
 
+        let tx = self.conn.transaction()?;
         // 插入正向关系
-        self.conn.execute(
-            "INSERT INTO relations (id, person_id, related_person_id, relation_type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, input.person_id, input.related_person_id, rtype, now],
-        )?;
-        // 插入反向关系
-        self.conn.execute(
-            "INSERT INTO relations (id, person_id, related_person_id, relation_type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![rev_id, input.related_person_id, input.person_id, rev_type, now],
+        tx.execute(
+            "INSERT INTO edges (id, member_id, related_member_id, relation_type, created_at, side) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, input.member_id, input.related_member_id, rtype, now, input.side],
         )?;
 
-        // 返回该人的所有关系（含新增的）
-        self.list_relations_by_person(&input.person_id)
+        // spouse 双向对称，写入反向边
+        if matches!(input.relation_type, EdgeType::Spouse) {
+            let rev_id = new_uuid();
+            tx.execute(
+                "INSERT INTO edges (id, member_id, related_member_id, relation_type, created_at, side) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![rev_id, input.related_member_id, input.member_id, rtype, now, input.side],
+            )?;
+        }
+        tx.commit()?;
+
+        self.list_edges_by_member(&input.member_id)
     }
 
-    fn row_to_relation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Relation> {
-        Ok(Relation {
+    fn row_to_edge(row: &rusqlite::Row<'_>) -> rusqlite::Result<Edge> {
+        Ok(Edge {
             id: row.get(0)?,
-            person_id: row.get(1)?,
-            related_person_id: row.get(2)?,
+            member_id: row.get(1)?,
+            related_member_id: row.get(2)?,
             relation_type: row.get(3)?,
             created_at: row.get(4)?,
-            related_person_name: row.get(5)?,
-            related_person_tomb_id: row.get(6)?,
+            side: row.get(5)?,
+            version: row.get(6)?,
+            deleted: row.get(7)?,
+            related_member_name: row.get(8)?,
+            related_member_grave_id: row.get(9)?,
         })
     }
 
-    /// 列出某人的所有关系（含双向），JOIN 填充关联人物姓名和墓 ID
-    pub fn list_relations_by_person(&self, person_id: &str) -> Result<Vec<Relation>> {
+    /// 列出某人的所有关系（双向）。JOIN 填充关联人物姓名和墓 ID。
+    /// spouse 边成对存储；son/daughter 只存父→子方向，这里同时查反向（该人是子女）。
+    pub fn list_edges_by_member(&self, member_id: &str) -> Result<Vec<Edge>> {
         let mut stmt = self.conn.prepare(
-            "SELECT r.id, r.person_id, r.related_person_id, r.relation_type, r.created_at,
-                    p.name AS related_person_name, p.tomb_id AS related_person_tomb_id
-             FROM relations r
-             JOIN persons p ON p.id = r.related_person_id
-             WHERE r.person_id = ?1
+            "SELECT r.id, r.member_id, r.related_member_id, r.relation_type, r.created_at,
+                    r.side, r.version, r.deleted,
+                    p.name AS related_member_name, p.grave_id AS related_member_grave_id
+             FROM edges r
+             JOIN members p ON p.id = r.related_member_id
+             WHERE r.member_id = ?1
+                OR (r.related_member_id = ?1 AND r.relation_type IN ('son', 'daughter'))
              ORDER BY r.relation_type, p.name",
         )?;
-        let rows = stmt.query_map(params![person_id], Self::row_to_relation)?;
+        let rows = stmt.query_map(params![member_id], Self::row_to_edge)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
+    /// 列出某族的全部在世成员（is_alive=1 且 clan_id 匹配）
+    pub fn list_members_by_clan(&self, clan_id: &str, alive: Option<bool>) -> Result<Vec<Member>> {
+        let mut sql = String::from(
+            "SELECT id, grave_id, clan_id, name, title, birth_date, death_date, biography, epitaph, spouse, is_joint_burial, children, is_alive, order_index, created_at, updated_at, version, deleted
+             FROM members WHERE clan_id = ?1",
+        );
+        if let Some(a) = alive {
+            sql.push_str(if a { " AND is_alive = 1" } else { " AND is_alive = 0" });
+        }
+        sql.push_str(" ORDER BY is_alive, order_index, name");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![clan_id], Self::row_to_member)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// 查询某族的关系图数据：全部人物（在世+已故），及人物间关系边（spouse 去重为一条）。
+    /// 返回 (members, edges)。edges 用 member_id(源) 语义：spouse 取正向，son/daughter 取父→子。
+    pub fn list_graph_by_clan(&self, clan_id: &str) -> Result<(Vec<Member>, Vec<Edge>)> {
+        let members = self.list_members_by_clan(clan_id, None)?;
+        // 收集该族人物 ID 集合，用于过滤边（只保留两端都属该族的边）
+        let ids: std::collections::HashSet<String> =
+            members.iter().map(|m| m.id.clone()).collect();
+        let mut stmt = self.conn.prepare(
+            "SELECT r.id, r.member_id, r.related_member_id, r.relation_type, r.created_at,
+                    r.side, r.version, r.deleted,
+                    p.name AS related_member_name, p.grave_id AS related_member_grave_id
+             FROM edges r
+             JOIN members p ON p.id = r.related_member_id
+             WHERE (r.member_id IN (SELECT id FROM members WHERE clan_id = ?1)
+                    OR r.related_member_id IN (SELECT id FROM members WHERE clan_id = ?1))
+             ORDER BY r.relation_type",
+        )?;
+        let rows = stmt.query_map(params![clan_id], Self::row_to_edge)?;
+        let mut edges: Vec<Edge> = rows
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| AppError::from(e))?;
+
+        // spouse 成对存储，去重为一条（保留 member_id 为源的方向）
+        let mut seen = std::collections::HashSet::new();
+        edges.retain(|e| {
+            let key = if e.relation_type == "spouse" {
+                let (a, b) = if e.member_id < e.related_member_id {
+                    (e.member_id.as_str(), e.related_member_id.as_str())
+                } else {
+                    (e.related_member_id.as_str(), e.member_id.as_str())
+                };
+                format!("{a}|{b}")
+            } else {
+                e.id.clone()
+            };
+            seen.insert(key)
+        });
+
+        // 只保留两端都在该族内的边
+        edges.retain(|e| ids.contains(&e.member_id) && ids.contains(&e.related_member_id));
+
+        Ok((members, edges))
+    }
+
+    /// 查询以某人物为中心、BFS 指定层数的子图（Ego 图）。
+    /// 返回 (members, edges)。
+    pub fn list_egograph(&self, member_id: &str, depth: usize) -> Result<(Vec<Member>, Vec<Edge>)> {
+        let mut member_ids = std::collections::HashSet::new();
+        member_ids.insert(member_id.to_string());
+        let mut frontier: Vec<String> = vec![member_id.to_string()];
+
+        // 逐层 BFS 收集层内人物
+        for _ in 0..depth {
+            let mut next: Vec<String> = Vec::new();
+            for mid in &frontier {
+                let mut stmt = self.conn.prepare(
+                    "SELECT member_id, related_member_id FROM edges
+                     WHERE member_id = ?1 OR related_member_id = ?1",
+                )?;
+                let rows = stmt.query_map(params![mid], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                for row in rows {
+                    let (a, b) = row?;
+                    for other in [a, b] {
+                        if member_ids.insert(other.clone()) {
+                            next.push(other);
+                        }
+                    }
+                }
+            }
+            frontier = next;
+        }
+
+        // 取人物
+        let mut members = Vec::new();
+        for mid in &member_ids {
+            if let Ok(m) = self.get_member(mid) {
+                members.push(m);
+            }
+        }
+
+        // 取人物间边
+        let placeholders = vec!["?"].repeat(member_ids.len()).join(",");
+        let mut params_vec: Vec<String> = member_ids.iter().cloned().collect();
+        params_vec.push(member_id.to_string());
+        let mut stmt = self.conn.prepare(
+            &format!(
+                "SELECT r.id, r.member_id, r.related_member_id, r.relation_type, r.created_at,
+                        r.side, r.version, r.deleted,
+                        p.name AS related_member_name, p.grave_id AS related_member_grave_id
+                 FROM edges r
+                 JOIN members p ON p.id = r.related_member_id
+                 WHERE r.member_id IN ({placeholders})
+                    OR (r.related_member_id IN ({placeholders}) AND r.relation_type IN ('son','daughter'))"
+            ),
+        )?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), Self::row_to_edge)?;
+        let edges: Vec<Edge> = rows
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| AppError::from(e))?;
+
+        Ok((members, edges))
+    }
+
     /// 删除单条关系及其反向关系
-    pub fn delete_relation(&self, id: &str) -> Result<()> {
+    pub fn delete_edge(&mut self, id: &str) -> Result<()> {
         // 先查出关系信息以便删除反向
         let rel = self.conn.query_row(
-            "SELECT id, person_id, related_person_id, relation_type, created_at FROM relations WHERE id = ?1",
+            "SELECT id, member_id, related_member_id, relation_type, created_at, side, version, deleted FROM edges WHERE id = ?1",
             params![id],
             |row| {
-                Ok(Relation {
+                Ok(Edge {
                     id: row.get(0)?,
-                    person_id: row.get(1)?,
-                    related_person_id: row.get(2)?,
+                    member_id: row.get(1)?,
+                    related_member_id: row.get(2)?,
                     relation_type: row.get(3)?,
                     created_at: row.get(4)?,
-                    related_person_name: None,
-                    related_person_tomb_id: None,
+                    side: row.get(5)?,
+                    version: row.get(6)?,
+                    deleted: row.get(7)?,
+                    related_member_name: None,
+                    related_member_grave_id: None,
                 })
             },
         ).optional()?
         .ok_or_else(|| AppError::NotFound(format!("relation {id}")))?;
 
+        let tx = self.conn.transaction()?;
         // 删除正向关系
-        let n = self.conn.execute("DELETE FROM relations WHERE id = ?1", params![id])?;
+        let n = tx.execute("DELETE FROM edges WHERE id = ?1", params![id])?;
         // 删除反向关系
-        self.conn.execute(
-            "DELETE FROM relations WHERE person_id = ?1 AND related_person_id = ?2 AND relation_type = ?3",
-            params![rel.related_person_id, rel.person_id, rel.relation_type],
+        tx.execute(
+            "DELETE FROM edges WHERE member_id = ?1 AND related_member_id = ?2 AND relation_type = ?3",
+            params![rel.related_member_id, rel.member_id, rel.relation_type],
         )?;
+        tx.commit()?;
         if n == 0 {
             return Err(AppError::NotFound(format!("relation {id}")));
         }
@@ -838,48 +1045,50 @@ impl TombKeeperDb {
     // 搜索
     // -----------------------------------------------------------------------
     /// 按关键字搜索墓地（名称/地址/描述模糊匹配）
-    pub fn search_tombs(&self, keyword: &str) -> Result<Vec<Tomb>> {
+    pub fn search_graves(&self, keyword: &str) -> Result<Vec<Grave>> {
         let pattern = format!("%{}%", keyword);
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, latitude, longitude, address, description, group_id, family_id, created_at, updated_at
-             FROM tombs
+            "SELECT id, name, latitude, longitude, address, description, burial_group_id, clan_id, created_at, updated_at, version, deleted
+             FROM graves
              WHERE name LIKE ?1 OR address LIKE ?1 OR description LIKE ?1
              ORDER BY name",
         )?;
-        let rows = stmt.query_map(params![pattern], Self::row_to_tomb)?;
+        let rows = stmt.query_map(params![pattern], Self::row_to_grave)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
     /// 按关键字搜索人物（姓名/生平模糊匹配），返回对应墓地
-    pub fn search_persons(&self, keyword: &str) -> Result<Vec<Tomb>> {
+    pub fn search_members(&self, keyword: &str) -> Result<Vec<Grave>> {
         let pattern = format!("%{}%", keyword);
         let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT t.id, t.name, t.latitude, t.longitude, t.address, t.description, t.group_id, t.family_id, t.created_at, t.updated_at
-             FROM persons p JOIN tombs t ON p.tomb_id = t.id
+            "SELECT DISTINCT t.id, t.name, t.latitude, t.longitude, t.address, t.description, t.burial_group_id, t.clan_id, t.created_at, t.updated_at, t.version, t.deleted
+             FROM members p JOIN graves t ON p.grave_id = t.id
              WHERE p.name LIKE ?1 OR p.biography LIKE ?1
              ORDER BY t.name",
         )?;
-        let rows = stmt.query_map(params![pattern], Self::row_to_tomb)?;
+        let rows = stmt.query_map(params![pattern], Self::row_to_grave)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
     /// 按关键字搜索家族（名称/祖籍模糊匹配）
-    pub fn search_families(&self, keyword: &str) -> Result<Vec<Family>> {
+    pub fn search_clans(&self, keyword: &str) -> Result<Vec<Clan>> {
         let pattern = format!("%{}%", keyword);
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, description, origin, created_at, updated_at
-             FROM families WHERE name LIKE ?1 OR origin LIKE ?1 ORDER BY name",
+            "SELECT id, name, description, origin, created_at, updated_at, version, deleted
+             FROM clans WHERE name LIKE ?1 OR origin LIKE ?1 ORDER BY name",
         )?;
         let rows = stmt.query_map(params![pattern], |row| {
-            Ok(Family {
+            Ok(Clan {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 description: row.get(2)?,
                 origin: row.get(3)?,
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
+                version: row.get(6)?,
+                deleted: row.get(7)?,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -900,7 +1109,7 @@ impl TombKeeperDb {
 
         // 1. 人物忌日
         let mut stmt = self.conn.prepare(
-            "SELECT id, tomb_id, name, title, death_date FROM persons WHERE death_date IS NOT NULL AND death_date != ''",
+            "SELECT id, grave_id, name, title, death_date FROM members WHERE death_date IS NOT NULL AND death_date != ''",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -913,7 +1122,7 @@ impl TombKeeperDb {
         })?;
 
         for row in rows {
-            let (id, tomb_id, name, title, death_date) = row?;
+            let (id, grave_id, name, title, death_date) = row?;
             let solar = parse_naive_date(&death_date);
             let solar = match solar {
                 Some(d) => d,
@@ -957,8 +1166,8 @@ impl TombKeeperDb {
                     title: format!("{}{} 忌日", title.as_deref().unwrap_or(""), name),
                     date: target_date.to_string(),
                     lunar_date: format!("农历{}月{}", lunar.month, lunar_day_name(lunar.day)),
-                    person_id: Some(id.clone()),
-                    tomb_id: Some(tomb_id.clone()),
+                    member_id: Some(id.clone()),
+                    grave_id: Some(grave_id.clone()),
                     days_until,
                 });
             }
@@ -1028,8 +1237,8 @@ fn add_festival_reminders(reminders: &mut Vec<Reminder>, today: chrono::NaiveDat
                     title: "清明节".into(),
                     date: date.to_string(),
                     lunar_date: "公历 4 月 5 日".into(),
-                    person_id: None,
-                    tomb_id: None,
+                    member_id: None,
+                    grave_id: None,
                     days_until: (date - today).num_days(),
                 });
             }
@@ -1050,8 +1259,8 @@ fn add_festival_reminders(reminders: &mut Vec<Reminder>, today: chrono::NaiveDat
                         title: "重阳节".into(),
                         date: date.to_string(),
                         lunar_date: "农历九月初九".into(),
-                        person_id: None,
-                        tomb_id: None,
+                        member_id: None,
+                        grave_id: None,
                         days_until: (date - today).num_days(),
                     });
                 }
@@ -1075,8 +1284,8 @@ fn add_festival_reminders(reminders: &mut Vec<Reminder>, today: chrono::NaiveDat
                         title: "春节".into(),
                         date: date.to_string(),
                         lunar_date: "农历正月初一".into(),
-                        person_id: None,
-                        tomb_id: None,
+                        member_id: None,
+                        grave_id: None,
                         days_until: (date - today).num_days(),
                     });
                 }
@@ -1100,8 +1309,8 @@ fn add_festival_reminders(reminders: &mut Vec<Reminder>, today: chrono::NaiveDat
                         title: "中元节".into(),
                         date: date.to_string(),
                         lunar_date: "农历七月十五".into(),
-                        person_id: None,
-                        tomb_id: None,
+                        member_id: None,
+                        grave_id: None,
                         days_until: (date - today).num_days(),
                     });
                 }
@@ -1125,8 +1334,8 @@ fn add_festival_reminders(reminders: &mut Vec<Reminder>, today: chrono::NaiveDat
                         title: "寒衣节".into(),
                         date: date.to_string(),
                         lunar_date: "农历十月初一".into(),
-                        person_id: None,
-                        tomb_id: None,
+                        member_id: None,
+                        grave_id: None,
                         days_until: (date - today).num_days(),
                     });
                 }
@@ -1139,126 +1348,188 @@ fn add_festival_reminders(reminders: &mut Vec<Reminder>, today: chrono::NaiveDat
 mod tests {
     use super::*;
 
-    fn setup() -> TombKeeperDb {
-        TombKeeperDb::in_memory().expect("in-memory db")
+    fn setup() -> ClanTrailDb {
+        ClanTrailDb::in_memory().expect("in-memory db")
     }
 
     #[test]
-    fn family_crud() {
+    fn clan_crud() {
         let db = setup();
         let f = db
-            .create_family(NewFamily {
+            .create_clan(NewClan {
                 name: "王氏家族".into(),
                 description: Some("宗族档案".into()),
                 origin: Some("山西洪洞".into()),
             })
             .unwrap();
-        assert_eq!(db.get_family(&f.id).unwrap().name, "王氏家族");
-        assert_eq!(db.list_families().unwrap().len(), 1);
+        assert_eq!(db.get_clan(&f.id).unwrap().name, "王氏家族");
+        assert_eq!(db.list_clans().unwrap().len(), 1);
 
         let updated = db
-            .update_family(&f.id, Some("王氏族谱".into()), None, None)
+            .update_clan(&f.id, Some("王氏族谱".into()), None, None)
             .unwrap();
         assert_eq!(updated.name, "王氏族谱");
         assert_eq!(updated.origin.as_deref(), Some("山西洪洞"));
 
-        db.delete_family(&f.id).unwrap();
-        assert!(db.get_family(&f.id).is_err());
+        db.delete_clan(&f.id).unwrap();
+        assert!(db.get_clan(&f.id).is_err());
     }
 
     #[test]
-    fn tomb_group_belongs_to_family() {
+    fn burial_group_belongs_to_clan() {
         let db = setup();
         let f = db
-            .create_family(NewFamily { name: "李氏".into(), description: None, origin: None })
+            .create_clan(NewClan { name: "李氏".into(), description: None, origin: None })
             .unwrap();
         let g = db
-            .create_tomb_group(NewTombGroup {
-                family_id: f.id.clone(),
+            .create_burial_group(NewBurialGroup {
+                clan_id: f.id.clone(),
                 name: "祖坟区".into(),
                 description: Some("山腰老坟".into()),
             })
             .unwrap();
-        assert_eq!(db.list_groups_by_family(&f.id).unwrap().len(), 1);
-        assert_eq!(db.list_groups_by_family(&g.id).unwrap().len(), 0);
+        assert_eq!(db.list_groups_by_clan(&f.id).unwrap().len(), 1);
+        assert_eq!(db.list_groups_by_clan(&g.id).unwrap().len(), 0);
 
         // 删除家族应级联删除墓组
-        db.delete_family(&f.id).unwrap();
-        assert!(db.list_groups_by_family(&f.id).unwrap().is_empty());
+        db.delete_clan(&f.id).unwrap();
+        assert!(db.list_groups_by_clan(&f.id).unwrap().is_empty());
     }
 
     #[test]
-    fn tomb_crud_with_relations() {
+    fn clan_delete_cascades_graves_members_and_images() {
         let db = setup();
         let f = db
-            .create_family(NewFamily { name: "赵氏".into(), description: None, origin: None })
+            .create_clan(NewClan {
+                name: "陈氏".into(),
+                description: None,
+                origin: None,
+            })
+            .unwrap();
+        let t = db
+            .create_grave(NewGrave {
+                name: "陈氏祖墓".into(),
+                latitude: 23.1,
+                longitude: 113.2,
+                address: None,
+                description: None,
+                burial_group_id: None,
+                clan_id: Some(f.id.clone()),
+            })
+            .unwrap();
+        let p = db
+            .create_member(NewMember {
+                grave_id: Some(t.id.clone()),
+                clan_id: None,
+                is_alive: false,
+                name: "陈公".into(),
+                title: None,
+                birth_date: None,
+                death_date: None,
+                biography: None,
+                epitaph: None,
+                spouse: None,
+                is_joint_burial: false,
+                children: None,
+                order_index: 1,
+            })
+            .unwrap();
+        db.add_image(NewImage {
+            entity_type: EntityType::Member,
+            entity_id: p.id.clone(),
+            file_path: "photos/chen.jpg".into(),
+            caption: None,
+            is_cover: false,
+        })
+        .unwrap();
+
+        // 删除家族前，子级均存在
+        assert_eq!(db.list_graves_by_clan(&f.id).unwrap().len(), 1);
+        assert_eq!(db.list_members_by_grave(&t.id).unwrap().len(), 1);
+        assert_eq!(db.list_images_by_entity(EntityType::Member, &p.id).unwrap().len(), 1);
+
+        // 删除家族应级联清理墓地、墓主与照片
+        db.delete_clan(&f.id).unwrap();
+        assert!(db.get_clan(&f.id).is_err());
+        assert!(db.get_grave(&t.id).is_err());
+        assert!(db.get_member(&p.id).is_err());
+        assert!(db.list_images_by_entity(EntityType::Member, &p.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn grave_crud_with_edges() {
+        let db = setup();
+        let f = db
+            .create_clan(NewClan { name: "赵氏".into(), description: None, origin: None })
             .unwrap();
         let g = db
-            .create_tomb_group(NewTombGroup {
-                family_id: f.id.clone(),
+            .create_burial_group(NewBurialGroup {
+                clan_id: f.id.clone(),
                 name: "东区".into(),
                 description: None,
             })
             .unwrap();
 
         let t = db
-            .create_tomb(NewTomb {
+            .create_grave(NewGrave {
                 name: "赵公明墓".into(),
                 latitude: 34.21,
                 longitude: 108.94,
                 address: Some("西安东郊".into()),
                 description: Some("明代墓".into()),
-                group_id: Some(g.id.clone()),
-                family_id: Some(f.id.clone()),
+                burial_group_id: Some(g.id.clone()),
+                clan_id: Some(f.id.clone()),
             })
             .unwrap();
-        assert_eq!(db.list_tombs_by_family(&f.id).unwrap().len(), 1);
-        assert_eq!(db.list_tombs_by_group(&g.id).unwrap().len(), 1);
+        assert_eq!(db.list_graves_by_clan(&f.id).unwrap().len(), 1);
+        assert_eq!(db.list_graves_by_group(&g.id).unwrap().len(), 1);
 
         // 非法经纬度
-        let bad = db.create_tomb(NewTomb {
+        let bad = db.create_grave(NewGrave {
             name: "bad".into(),
             latitude: 100.0,
             longitude: 0.0,
             address: None,
             description: None,
-            group_id: None,
-            family_id: None,
+            burial_group_id: None,
+            clan_id: None,
         });
         assert!(bad.is_err());
 
         // 关联不存在家族应报错
-        let bad_family = db.create_tomb(NewTomb {
+        let bad_clan = db.create_grave(NewGrave {
             name: "bad2".into(),
             latitude: 0.0,
             longitude: 0.0,
             address: None,
             description: None,
-            group_id: None,
-            family_id: Some("not-exist".into()),
+            burial_group_id: None,
+            clan_id: Some("not-exist".into()),
         });
-        assert!(bad_family.is_err());
+        assert!(bad_clan.is_err());
         drop(t);
     }
 
     #[test]
-    fn person_and_photos() {
+    fn member_and_images() {
         let db = setup();
         let t = db
-            .create_tomb(NewTomb {
+            .create_grave(NewGrave {
                 name: "合葬墓".into(),
                 latitude: 30.5,
                 longitude: 114.3,
                 address: None,
                 description: None,
-                group_id: None,
-                family_id: None,
+                burial_group_id: None,
+                clan_id: None,
             })
             .unwrap();
 
         let p1 = db
-            .create_person(NewPerson {
-                tomb_id: t.id.clone(),
+            .create_member(NewMember {
+                grave_id: Some(t.id.clone()),
+                clan_id: None,
+                is_alive: false,
                 name: "张爷爷".into(),
                 title: Some("祖父".into()),
                 birth_date: Some("1900-01-01".into()),
@@ -1275,8 +1546,10 @@ mod tests {
         assert!(p1.is_joint_burial);
         assert_eq!(p1.children.as_deref(), Some("张大、张二、张三"));
 
-        db.create_person(NewPerson {
-            tomb_id: t.id.clone(),
+        db.create_member(NewMember {
+            grave_id: Some(t.id.clone()),
+                clan_id: None,
+                is_alive: false,
             name: "张奶奶".into(),
             title: Some("祖母".into()),
             birth_date: None,
@@ -1290,14 +1563,14 @@ mod tests {
         })
         .unwrap();
 
-        let persons = db.list_persons_by_tomb(&t.id).unwrap();
-        assert_eq!(persons.len(), 2);
-        assert_eq!(persons[0].order_index, 1);
-        assert_eq!(persons[1].order_index, 2);
+        let members = db.list_members_by_grave(&t.id).unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].order_index, 1);
+        assert_eq!(members[1].order_index, 2);
 
-        // 测试 update_person
+        // 测试 update_member
         let updated = db
-            .update_person(
+            .update_member(
                 &p1.id,
                 None,
                 None,
@@ -1309,48 +1582,52 @@ mod tests {
                 Some(false),
                 None,
                 Some(5),
+                None,
+                None,
             )
             .unwrap();
         assert_eq!(updated.spouse.as_deref(), Some("张氏"));
         assert!(!updated.is_joint_burial);
         assert_eq!(updated.order_index, 5);
 
-        db.add_photo(NewPhoto {
-            entity_type: EntityType::Tomb,
+        db.add_image(NewImage {
+            entity_type: EntityType::Grave,
             entity_id: t.id.clone(),
-            file_path: "/photos/tomb1.jpg".into(),
+            file_path: "/images/grave1.jpg".into(),
             caption: Some("墓碑".into()),
             is_cover: true,
         })
         .unwrap();
-        let photos = db.list_photos_by_entity(EntityType::Tomb, &t.id).unwrap();
-        assert_eq!(photos.len(), 1);
-        assert!(photos[0].is_cover);
+        let images = db.list_images_by_entity(EntityType::Grave, &t.id).unwrap();
+        assert_eq!(images.len(), 1);
+        assert!(images[0].is_cover);
     }
 
     #[test]
     fn search_works() {
         let db = setup();
         let f = db
-            .create_family(NewFamily {
+            .create_clan(NewClan {
                 name: "陈家".into(),
                 description: None,
                 origin: Some("福建".into()),
             })
             .unwrap();
         let t = db
-            .create_tomb(NewTomb {
+            .create_grave(NewGrave {
                 name: "陈公墓".into(),
                 latitude: 24.5,
                 longitude: 118.1,
                 address: Some("厦门集美".into()),
                 description: Some("清代墓".into()),
-                group_id: None,
-                family_id: Some(f.id.clone()),
+                burial_group_id: None,
+                clan_id: Some(f.id.clone()),
             })
             .unwrap();
-        db.create_person(NewPerson {
-            tomb_id: t.id.clone(),
+        db.create_member(NewMember {
+            grave_id: Some(t.id.clone()),
+                clan_id: None,
+                is_alive: false,
             name: "陈永福".into(),
             title: None,
             birth_date: None,
@@ -1364,11 +1641,100 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(db.search_tombs("陈公").unwrap().len(), 1);
-        assert_eq!(db.search_tombs("集美").unwrap().len(), 1);
-        assert_eq!(db.search_persons("永福").unwrap().len(), 1);
-        assert_eq!(db.search_persons("举人").unwrap().len(), 1);
-        assert_eq!(db.search_families("福建").unwrap().len(), 1);
-        assert_eq!(db.search_tombs("不存在").unwrap().len(), 0);
+        assert_eq!(db.search_graves("陈公").unwrap().len(), 1);
+        assert_eq!(db.search_graves("集美").unwrap().len(), 1);
+        assert_eq!(db.search_members("永福").unwrap().len(), 1);
+        assert_eq!(db.search_members("举人").unwrap().len(), 1);
+        assert_eq!(db.search_clans("福建").unwrap().len(), 1);
+        assert_eq!(db.search_graves("不存在").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn lunar_solar_roundtrip() {
+        use lunar_lite::{lunar_to_solar, solar_to_lunar, LunarDate, SolarDate};
+        // 已知锚点：2023-01-22 是农历癸卯年正月初一
+        let l = solar_to_lunar(SolarDate {
+            year: 2023,
+            month: 1,
+            day: 22,
+        })
+        .expect("solar_to_lunar 失败");
+        assert_eq!((l.month, l.day, l.is_leap_month), (1, 1, false));
+        // 回推：农历 2023 正月初一 应为公历 2023-01-22
+        let s = lunar_to_solar(LunarDate {
+            year: 2023,
+            month: 1,
+            day: 1,
+            is_leap_month: false,
+        })
+        .expect("lunar_to_solar 失败");
+        assert_eq!((s.year, s.month, s.day), (2023, 1, 22));
+
+        // 任意日期往返一致性（最易出错的换算核心）
+        let orig = SolarDate {
+            year: 1995,
+            month: 8,
+            day: 15,
+        };
+        let lunar = solar_to_lunar(orig).expect("solar_to_lunar 失败");
+        let back = lunar_to_solar(LunarDate {
+            year: lunar.year,
+            month: lunar.month,
+            day: lunar.day,
+            is_leap_month: lunar.is_leap_month,
+        })
+        .expect("lunar_to_solar 失败");
+        assert_eq!(
+            (back.year, back.month, back.day),
+            (orig.year, orig.month, orig.day)
+        );
+    }
+
+    #[test]
+    fn list_reminders_includes_death_anniversary() {
+        let db = setup();
+        let t = db
+            .create_grave(NewGrave {
+                name: "忌日测试墓".into(),
+                latitude: 30.0,
+                longitude: 114.0,
+                address: None,
+                description: None,
+                burial_group_id: None,
+                clan_id: None,
+            })
+            .unwrap();
+        let p = db
+            .create_member(NewMember {
+                grave_id: Some(t.id.clone()),
+                clan_id: None,
+                is_alive: false,
+                name: "忌日测试人".into(),
+                title: Some("考".into()),
+                birth_date: None,
+                death_date: Some("1980-06-15".into()),
+                biography: None,
+                epitaph: None,
+                spouse: None,
+                is_joint_burial: false,
+                children: None,
+                order_index: 1,
+            })
+            .unwrap();
+
+        // 窗口放大到 3 年，必然覆盖至少一个周年忌日
+        let reminders = db.list_reminders(365 * 3).unwrap();
+        let hit = reminders
+            .iter()
+            .find(|r| r.member_id.as_deref() == Some(p.id.as_str()));
+        assert!(hit.is_some(), "应为该逝者生成忌日提醒");
+        let hit = hit.unwrap();
+        assert!(hit.title.contains("忌日测试人"), "标题应包含逝者名");
+        assert!(
+            hit.lunar_date.contains("农历"),
+            "lunar_date 应为农历表述，实际: {}",
+            hit.lunar_date
+        );
+        assert!(hit.days_until >= 0);
     }
 }

@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
-// 家族
+// 宗族
 // ---------------------------------------------------------------------------
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Family {
+pub struct Clan {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
@@ -13,22 +13,28 @@ pub struct Family {
     pub origin: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// 同步版本号（随每次更新自增）
+    #[serde(default)]
+    pub version: u32,
+    /// 软删除标记（同步预留）
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewFamily {
+pub struct NewClan {
     pub name: String,
     pub description: Option<String>,
     pub origin: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
-// 墓组 —— 一个家族下的墓地区划（如"祖坟区""新墓区"）
+// 墓组 —— 一个宗族下的墓地区划（如"祖坟区""新墓区"）
 // ---------------------------------------------------------------------------
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TombGroup {
+pub struct BurialGroup {
     pub id: String,
-    pub family_id: String,
+    pub clan_id: String,
     pub name: String,
     pub description: Option<String>,
     pub created_at: String,
@@ -36,8 +42,8 @@ pub struct TombGroup {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewTombGroup {
-    pub family_id: String,
+pub struct NewBurialGroup {
+    pub clan_id: String,
     pub name: String,
     pub description: Option<String>,
 }
@@ -46,7 +52,7 @@ pub struct NewTombGroup {
 // 单墓地
 // ---------------------------------------------------------------------------
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tomb {
+pub struct Grave {
     pub id: String,
     /// 墓地名称 / 编号（如"XX公墓 A区-12排-3号"）
     pub name: String,
@@ -55,31 +61,38 @@ pub struct Tomb {
     pub address: Option<String>,
     pub description: Option<String>,
     /// 所属墓组（可选）
-    pub group_id: Option<String>,
-    /// 所属家族（可选）
-    pub family_id: Option<String>,
+    pub burial_group_id: Option<String>,
+    /// 所属宗族（可选）
+    pub clan_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewTomb {
+pub struct NewGrave {
     pub name: String,
     pub latitude: f64,
     pub longitude: f64,
     pub address: Option<String>,
     pub description: Option<String>,
-    pub group_id: Option<String>,
-    pub family_id: Option<String>,
+    pub burial_group_id: Option<String>,
+    pub clan_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
-// 墓主 / 人物 —— 一个墓地可能合葬多人
+// 人物 —— 有墓时是墓主（安葬人物），无墓时是在世亲属
 // ---------------------------------------------------------------------------
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Person {
+pub struct Member {
     pub id: String,
-    pub tomb_id: String,
+    /// 所属墓地（可空：在世者无墓）
+    pub grave_id: Option<String>,
+    /// 所属宗族（在世者直接归族；已故者从墓地归族）
+    pub clan_id: Option<String>,
     pub name: String,
     /// 称谓（如"先祖""祖父""慈母"）
     pub title: Option<String>,
@@ -89,21 +102,29 @@ pub struct Person {
     pub biography: Option<String>,
     /// 墓志铭
     pub epitaph: Option<String>,
-    /// 配偶姓名
+    /// 配偶姓名（旧文本字段，关系图用 Edge）
     pub spouse: Option<String>,
     /// 是否合墓（夫妻或家族同穴）
     pub is_joint_burial: bool,
-    /// 子女（多个用顿号/逗号分隔，简化处理）
+    /// 子女（旧文本字段，关系图用 Edge）
     pub children: Option<String>,
+    /// 在世标记（true=在世无墓，false=已安葬）
+    #[serde(default)]
+    pub is_alive: bool,
     /// 排序（合葬墓中区分先后）
     pub order_index: i32,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewPerson {
-    pub tomb_id: String,
+pub struct NewMember {
+    pub grave_id: Option<String>,
+    pub clan_id: Option<String>,
     pub name: String,
     pub title: Option<String>,
     pub birth_date: Option<String>,
@@ -113,41 +134,43 @@ pub struct NewPerson {
     pub spouse: Option<String>,
     pub is_joint_burial: bool,
     pub children: Option<String>,
+    #[serde(default)]
+    pub is_alive: bool,
     pub order_index: i32,
 }
 
 // ---------------------------------------------------------------------------
-// 照片 —— 多态关联到 Tomb / Person / Family
+// 图片 —— 多态关联到 Grave / Member / Clan
 // ---------------------------------------------------------------------------
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntityType {
-    Tomb,
-    Person,
-    Family,
+    Grave,
+    Member,
+    Clan,
 }
 
 impl EntityType {
     pub fn as_str(&self) -> &'static str {
         match self {
-            EntityType::Tomb => "tomb",
-            EntityType::Person => "person",
-            EntityType::Family => "family",
+            EntityType::Grave => "grave",
+            EntityType::Member => "member",
+            EntityType::Clan => "clan",
         }
     }
 
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
-            "tomb" => Some(EntityType::Tomb),
-            "person" => Some(EntityType::Person),
-            "family" => Some(EntityType::Family),
+            "grave" => Some(EntityType::Grave),
+            "member" => Some(EntityType::Member),
+            "clan" => Some(EntityType::Clan),
             _ => None,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Photo {
+pub struct Image {
     pub id: String,
     pub entity_type: String,
     pub entity_id: String,
@@ -155,10 +178,14 @@ pub struct Photo {
     pub caption: Option<String>,
     pub is_cover: bool,
     pub created_at: String,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewPhoto {
+pub struct NewImage {
     pub entity_type: EntityType,
     pub entity_id: String,
     pub file_path: String,
@@ -168,65 +195,73 @@ pub struct NewPhoto {
 
 // ---------------------------------------------------------------------------
 // 人物关系（结构化关联，替代纯文本 spouse/children）
+// 只存三种基础边：spouse(配偶)/son(儿子)/daughter(女儿)，其余辈分自动推导。
 // ---------------------------------------------------------------------------
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RelationType {
+pub enum EdgeType {
     Spouse,
-    Parent,
-    Child,
-    JointBurial,
+    Son,
+    Daughter,
 }
 
-impl RelationType {
+impl EdgeType {
     pub fn as_str(&self) -> &'static str {
         match self {
-            RelationType::Spouse => "spouse",
-            RelationType::Parent => "parent",
-            RelationType::Child => "child",
-            RelationType::JointBurial => "joint_burial",
+            EdgeType::Spouse => "spouse",
+            EdgeType::Son => "son",
+            EdgeType::Daughter => "daughter",
         }
     }
 
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
-            "spouse" => Some(RelationType::Spouse),
-            "parent" => Some(RelationType::Parent),
-            "child" => Some(RelationType::Child),
-            "joint_burial" => Some(RelationType::JointBurial),
+            "spouse" => Some(EdgeType::Spouse),
+            "son" => Some(EdgeType::Son),
+            "daughter" => Some(EdgeType::Daughter),
             _ => None,
         }
     }
 
-    /// 反向关系类型（parent ↔ child, spouse ↔ spouse, joint_burial ↔ joint_burial）
-    pub fn reverse(&self) -> RelationType {
+    /// 反向关系类型（spouse <-> spouse, son/daughter 的逆为 parent，存为 son/daughter）
+    /// spouse 双向对称；son/daughter 的反向边在前端推导时使用，存储时仍存 son/daughter
+    pub fn reverse(&self) -> EdgeType {
         match self {
-            RelationType::Spouse => RelationType::Spouse,
-            RelationType::Parent => RelationType::Child,
-            RelationType::Child => RelationType::Parent,
-            RelationType::JointBurial => RelationType::JointBurial,
+            EdgeType::Spouse => EdgeType::Spouse,
+            EdgeType::Son => EdgeType::Son,
+            EdgeType::Daughter => EdgeType::Daughter,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Relation {
+pub struct Edge {
     pub id: String,
-    pub person_id: String,
-    pub related_person_id: String,
+    pub member_id: String,
+    pub related_member_id: String,
     pub relation_type: String,
     pub created_at: String,
+    /// 关系归属侧：born 原生家庭 / married 姻亲家庭（跨族关联用）
+    #[serde(default)]
+    pub side: Option<String>,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub deleted: bool,
     /// 关联人物的姓名（JOIN 查询填充，前端展示用）
-    pub related_person_name: Option<String>,
+    pub related_member_name: Option<String>,
     /// 关联人物所在墓的 ID
-    pub related_person_tomb_id: Option<String>,
+    pub related_member_grave_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewRelation {
-    pub person_id: String,
-    pub related_person_id: String,
-    pub relation_type: RelationType,
+pub struct NewEdge {
+    pub member_id: String,
+    pub related_member_id: String,
+    pub relation_type: EdgeType,
+    /// 关系归属侧：born / married（跨族关联用）
+    #[serde(default)]
+    pub side: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -262,9 +297,9 @@ pub struct Reminder {
     /// 农历日期描述（如 农历七月初三）
     pub lunar_date: String,
     /// 关联人物 ID（忌日时）
-    pub person_id: Option<String>,
+    pub member_id: Option<String>,
     /// 关联墓地 ID（忌日时）
-    pub tomb_id: Option<String>,
+    pub grave_id: Option<String>,
     /// 距离今天的天数
     pub days_until: i64,
 }

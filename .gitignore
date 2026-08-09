@@ -32,6 +32,12 @@ build-android*.log
 
 # ===== Android 工具链（本地安装，重新下载成本高）=====
 android-sdk
+# 自签名 release keystore（敏感，不入库；正式发布请替换为你的正式 keystore）
+android-keystore
+# JDK 17 本地工具链（android-env.sh 引用；含解压包，不入库）
+android-toolchain
+# 运行时备份（备份/导出功能产物）
+backups
 
 # ===== 本地保留的构建产物（不入库）=====
 /apk
@@ -41,6 +47,8 @@ android-sdk
 *.timestamp-*.mjs
 diag*.png
 diag*.mjs
+# 一次性工具安装器（本地下载，不入库）
+rustup-init.exe
 
 # ===== IDE / OS =====
 .idea
@@ -50,4 +58,7 @@ diag*.mjs
 Thumbs.db
 
 # ===== WorkBuddy =====
-# .workbuddy 为项目数据目录，保留，不忽略也不提交
+# .workbuddy 为项目数据目录，保留在磁盘，已提交入库（AI 工作记忆与项目数据）
+.cache/
+.workbuddy/screenshots/
+web/tsc

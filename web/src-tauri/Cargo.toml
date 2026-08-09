@@ -1,17 +1,17 @@
 [package]
-name = "tomb-keeper-tauri"
+name = "clantrail-tauri"
 version = "0.1.0"
-description = "Tomb Keeper desktop/mobile shell with embedded Axum backend"
+description = "ClanTrail desktop/mobile shell with embedded Axum backend"
 edition = "2021"
 rust-version = "1.77.2"
 
 [lib]
-name = "tomb_keeper_tauri_lib"
+name = "clantrail_tauri_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 path = "src/lib.rs"
 
 [[bin]]
-name = "tomb-keeper-tauri"
+name = "clantrail-tauri"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -23,5 +23,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["multipart"] }
-tomb-keeper-core = { path = "../../src-core" }
-tomb-keeper-server = { path = "../../src-server" }
+clantrail-core = { path = "../../src-core" }
+clantrail-server = { path = "../../src-server" }
+tauri-plugin-geolocation = "2"
+tauri-plugin-opener = "2"

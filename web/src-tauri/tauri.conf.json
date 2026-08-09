@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "TombKeeper",
+  "productName": "族迹",
   "version": "0.1.0",
-  "identifier": "com.tombkeeper.app",
+  "identifier": "com.clantrail.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5174",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Tomb Keeper",
+        "title": "族迹",
         "width": 390,
         "height": 844,
         "minWidth": 320,
@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-eval' https://*.amap.com blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: http://127.0.0.1:8080 http://*.amap.com https://*.amap.com http://*.autonavi.com https://*.autonavi.com https://*.tianditu.gov.cn; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8080 http://*.amap.com https://*.amap.com http://*.autonavi.com https://*.autonavi.com http://restapi.amap.com https://restapi.amap.com https://*.tianditu.gov.cn"
     }
   },
   "bundle": {

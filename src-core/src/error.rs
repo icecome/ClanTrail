@@ -5,6 +5,9 @@ pub enum AppError {
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
 
+    #[error("migration error: {0}")]
+    Migration(#[from] refinery::Error),
+
     #[error("entity not found: {0}")]
     NotFound(String),
 

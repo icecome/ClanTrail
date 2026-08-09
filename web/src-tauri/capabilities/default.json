@@ -1,7 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "tomb-keeper-default",
-  "description": "Tomb Keeper default capability",
+  "identifier": "clantrail-default",
+  "description": "族迹 default capability",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "opener:default"
+  ]
 }

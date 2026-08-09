@@ -13,18 +13,18 @@ git-fetch-with-cli = true
 #   rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 # 本环境因网络限制无法获取 rust android std，故此处仅预置链接器配置，供可联网机器出 APK 使用。
 [target.aarch64-linux-android]
-linker = "C:/opt/workstations/project/apps/muji/tomb-keeper/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android21-clang.cmd"
-ar = "C:/opt/workstations/project/apps/muji/tomb-keeper/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-ar.exe"
+linker = "C:/Develop/project/ClanTrail/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android21-clang.cmd"
+ar = "C:/Develop/project/ClanTrail/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-ar.exe"
 
 [target.armv7-linux-androideabi]
-linker = "C:/opt/workstations/project/apps/muji/tomb-keeper/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/armv7a-linux-androideabi21-clang.cmd"
-ar = "C:/opt/workstations/project/apps/muji/tomb-keeper/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-ar.exe"
+linker = "C:/Develop/project/ClanTrail/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/armv7a-linux-androideabi21-clang.cmd"
+ar = "C:/Develop/project/ClanTrail/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-ar.exe"
 
 [target.i686-linux-android]
-linker = "C:/opt/workstations/project/apps/muji/tomb-keeper/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/i686-linux-android21-clang.cmd"
-ar = "C:/opt/workstations/project/apps/muji/tomb-keeper/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-ar.exe"
+linker = "C:/Develop/project/ClanTrail/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/i686-linux-android21-clang.cmd"
+ar = "C:/Develop/project/ClanTrail/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-ar.exe"
 
 [target.x86_64-linux-android]
-linker = "C:/opt/workstations/project/apps/muji/tomb-keeper/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/x86_64-linux-android21-clang.cmd"
-ar = "C:/opt/workstations/project/apps/muji/tomb-keeper/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-ar.exe"
+linker = "C:/Develop/project/ClanTrail/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/x86_64-linux-android21-clang.cmd"
+ar = "C:/Develop/project/ClanTrail/android-sdk/ndk/25.2.9519653/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-ar.exe"
 
