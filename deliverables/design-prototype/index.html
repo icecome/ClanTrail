@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>族迹 ClanTrail · 设计还原原型</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --dai: #35525E;          /* 黛青 主色 */
+    --dai-deep: #2A414B;     /* 黛青 深 */
+    --dai-soft: #E8EEF0;     /* 黛青 柔 */
+    --zhusha: #B94A3C;       /* 朱砂 点缀（仅临近忌日） */
+    --zhusha-soft: #F6E7E3;  /* 朱砂 浅底 */
+    --paper: #F4F1EA;        /* 纸感底 */
+    --card: #FFFFFF;         /* 卡片 */
+    --ink-1: #23282B;        /* 强文字 */
+    --ink-2: #51585C;        /* 中文字 */
+    --ink-3: #8A9095;        /* 弱文字 */
+    --white-variant: #F3F0E9;/* 白底变体文字 */
+    --line: #E6E1D8;         /* 描边 */
+    --radius-card: 16px;
+    --radius-pill: 999px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: "Noto Sans SC", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #E9E5DC;
+    color: var(--ink-1);
+    padding: 40px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .stage {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 36px;
+    justify-content: center;
+    align-items: flex-start;
+  }
+
+  .screen-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .label { font-size: 13px; font-weight: 600; color: #6b6f72; letter-spacing: .04em; }
+
+  /* ---------- 手机外框 390x844 ---------- */
+  .phone {
+    width: 390px;
+    height: 844px;
+    background: var(--paper);
+    border-radius: 44px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 24px 60px rgba(42, 65, 75, 0.22), 0 2px 8px rgba(42, 65, 75, 0.1);
+    flex: none;
+  }
+
+  /* 状态栏 */
+  .statusbar {
+    height: 44px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 28px;
+    font-size: 14px; font-weight: 600; color: var(--ink-1);
+  }
+  .statusbar .icons { display: flex; gap: 6px; align-items: center; }
+  .statusbar .icons svg { width: 16px; height: 16px; }
+
+  /* 顶栏 */
+  .topbar {
+    height: 56px;
+    display: flex; align-items: center; padding: 0 20px; gap: 8px;
+  }
+  .topbar .tb-title { font-size: 20px; font-weight: 700; color: var(--ink-1); }
+  .topbar .tb-spacer { flex: 1; }
+  .icon-btn {
+    width: 40px; height: 40px; border-radius: 12px;
+    background: var(--card); border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--ink-1); cursor: pointer;
+  }
+  .icon-btn svg { width: 22px; height: 22px; }
+
+  /* 内容区 */
+  .content { position: absolute; top: 100px; left: 0; right: 0; bottom: 0; padding: 0 20px; overflow: hidden; }
+  .content.scroll { overflow-y: auto; }
+
+  /* ---------- 通用组件 ---------- */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-card);
+    padding: 16px;
+  }
+  .section-title {
+    display: flex; align-items: center; justify-content: space-between;
+    margin: 18px 0 10px; padding: 0;
+  }
+  .section-title h2 { font-size: 15px; font-weight: 600; color: var(--ink-1); }
+  .section-title .more { font-size: 12px; color: var(--ink-3); }
+
+  .stat-row { display: flex; gap: 12px; }
+  .stat-card {
+    flex: 1; background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius-card); padding: 16px;
+  }
+  .stat-card .num { font-size: 28px; font-weight: 700; color: var(--dai); line-height: 1; }
+  .stat-card .lbl { font-size: 13px; color: var(--ink-2); margin-top: 8px; font-weight: 500; }
+
+  /* 列表行 */
+  .list { display: flex; flex-direction: column; gap: 12px; }
+  .row {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius-card); padding: 14px 16px;
+  }
+  .row .ic {
+    width: 38px; height: 38px; border-radius: 11px; flex: none;
+    background: var(--dai-soft); color: var(--dai);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .row .ic svg { width: 20px; height: 20px; }
+  .row .body { flex: 1; min-width: 0; }
+  .row .t1 { font-size: 15px; font-weight: 600; color: var(--ink-1); }
+  .row .t2 { font-size: 12.5px; color: var(--ink-3); margin-top: 3px; }
+  .row .chev { color: var(--ink-3); flex: none; }
+  .row .chev svg { width: 18px; height: 18px; }
+
+  /* 徽标 */
+  .badge {
+    display: inline-flex; align-items: center;
+    font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: var(--radius-pill);
+    line-height: 1.4;
+  }
+  .badge-out-dai { color: var(--dai); border: 1px solid var(--dai); padding: 2px 8px; border-radius: var(--radius-pill); }
+  .badge-solid-zhu { background: var(--zhusha); color: #fff; padding: 3px 9px; border-radius: var(--radius-pill); }
+  .badge-soft-zhu { background: var(--zhusha); color: #fff; padding: 3px 9px; border-radius: var(--radius-pill); }
+  .badge-soft-dai { background: var(--dai-soft); color: var(--dai); padding: 3px 9px; border-radius: var(--radius-pill); }
+  .badge-pill-dai { background: var(--dai); color: var(--white-variant); font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: var(--radius-pill); }
+
+  /* FAB */
+  .fab {
+    position: absolute; right: 16px; bottom: 118px;
+    width: 56px; height: 56px; border-radius: 28px;
+    background: var(--dai); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 10px 24px rgba(53, 82, 94, 0.35);
+    z-index: 30;
+  }
+  .fab svg { width: 26px; height: 26px; }
+
+  /* 玻璃态底栏 */
+  .tabbar {
+    position: absolute; left: 20px; right: 20px; bottom: 30px;
+    height: 64px; border-radius: 32px;
+    background: rgba(255, 255, 255, 0.55);
+    -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    box-shadow: 0 8px 24px rgba(54, 82, 94, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    display: flex; align-items: center; justify-content: space-around;
+    padding: 0 8px; z-index: 20;
+  }
+  .tab { display: flex; flex-direction: column; align-items: center; gap: 3px; width: 56px; color: var(--ink-3); cursor: pointer; }
+  .tab svg { width: 23px; height: 23px; }
+  .tab span { font-size: 10px; font-weight: 500; }
+  .tab.active { color: var(--dai); }
+
+  /* ---------- 各屏专属 ---------- */
+  .hero {
+    background: var(--dai); border-radius: var(--radius-card); padding: 18px 20px; color: var(--white-variant);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .hero .h-title { font-size: 15px; font-weight: 600; opacity: .85; }
+  .hero .h-num { font-size: 30px; font-weight: 700; margin-top: 4px; }
+  .hero .h-sub { font-size: 12px; opacity: .7; margin-top: 2px; }
+
+  .reminder-card { display: flex; align-items: stretch; gap: 0; border: 1px solid var(--line); border-radius: var(--radius-card); overflow: hidden; background: var(--card); }
+  .reminder-card .date-block {
+    width: 64px; flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #fff; padding: 10px 0;
+    border-radius: 14px 0 0 14px;
+  }
+  .reminder-card .date-block.dai { background: var(--dai); }
+  .reminder-card .date-block.zhu { background: var(--zhusha); }
+  .reminder-card .date-block .d-day { font-size: 20px; font-weight: 700; line-height: 1; }
+  .reminder-card .date-block .d-lunar { font-size: 10px; margin-top: 4px; opacity: .85; }
+  .reminder-card .r-main { flex: 1; padding: 12px 14px; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+  .reminder-card .r-name { font-size: 15px; font-weight: 600; color: var(--ink-1); }
+  .reminder-card .r-meta { font-size: 12px; color: var(--ink-3); }
+  .reminder-card .r-right { display: flex; align-items: center; padding-right: 14px; }
+
+  /* 地图 */
+  .map-area {
+    height: 300px; border-radius: var(--radius-card); overflow: hidden; position: relative;
+    border: 1px solid var(--line); background: #EAF1EE;
+  }
+  .map-area svg { width: 100%; height: 100%; display: block; }
+  .marker {
+    position: absolute; width: 30px; height: 30px; transform: translate(-50%, -100%);
+  }
+  .marker svg { width: 100%; height: 100%; }
+
+  /* 表单 */
+  .field { display: block; margin-bottom: 16px; }
+  .field > label { display: block; font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 7px; }
+  .field input, .field textarea {
+    width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+    font-size: 14px; font-family: inherit; color: var(--ink-1); background: var(--card); outline: none;
+  }
+  .field input::placeholder, .field textarea::placeholder { color: var(--ink-3); }
+  .field input:focus, .field textarea:focus { border-color: var(--dai); }
+  .pick-row { display: flex; gap: 10px; }
+  .pick-row .locate-btn {
+    flex: 1; border: 1px solid var(--line); border-radius: 12px; padding: 12px; font-size: 13px;
+    background: var(--card); color: var(--ink-1); font-family: inherit; cursor: pointer; font-weight: 500;
+  }
+  .pick-row .locate-btn.primary { background: var(--dai); color: #fff; border-color: var(--dai); }
+
+  .cover-zone {
+    height: 120px; border: 1px dashed var(--line); border-radius: var(--radius-card);
+    background: var(--card); display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 6px; color: var(--ink-3); margin-bottom: 18px;
+  }
+  .cover-zone svg { width: 28px; height: 28px; }
+  .cover-zone span { font-size: 12.5px; }
+
+  .privacy {
+    display: flex; gap: 9px; align-items: flex-start;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 14px; margin-bottom: 20px;
+  }
+  .privacy svg { width: 17px; height: 17px; flex: none; color: var(--dai); margin-top: 1px; }
+  .privacy span { font-size: 12px; color: var(--ink-2); line-height: 1.5; }
+
+  .btn-primary-block {
+    width: 100%; background: var(--dai); color: #fff; border: none; border-radius: 14px;
+    padding: 15px; font-size: 15px; font-weight: 600; font-family: inherit; cursor: pointer;
+  }
+
+  /* 账户卡 */
+  .account-card {
+    display: flex; align-items: center; gap: 14px; margin-bottom: 8px; padding: 18px 16px;
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-card);
+    box-shadow: 0 4px 16px rgba(54, 82, 94, 0.04); cursor: pointer;
+  }
+  .account-card .avatar {
+    width: 52px; height: 52px; border-radius: 50%; flex: none; background: var(--dai-soft); color: var(--dai);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .account-card .avatar svg { width: 28px; height: 28px; }
+  .account-card .a-body { flex: 1; }
+  .account-card .a-name { font-size: 17px; font-weight: 700; color: var(--ink-1); display: flex; align-items: center; gap: 8px; }
+  .account-card .a-sub { font-size: 12.5px; color: var(--ink-3); margin-top: 4px; }
+
+  /* 人物详情卡内标题行 */
+  .card-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .card-title-row .ct-name { font-size: 16px; font-weight: 600; color: var(--ink-1); }
+  .card-title-row .ct-hint { margin-left: auto; font-size: 11px; color: var(--ink-3); padding-left: 6px; }
+  .person-photo { height: 150px; border-radius: var(--radius-card); background: linear-gradient(135deg,#dfe7e4,#cfd9d8); border: 1px solid var(--line); margin-bottom: 14px; display:flex; align-items:center; justify-content:center; color: var(--ink-3); }
+  .person-photo svg { width: 34px; height: 34px; }
+  .bio-text { font-size: 13.5px; line-height: 1.7; color: var(--ink-2); }
+  .meta-line { display: flex; justify-content: space-between; font-size: 13.5px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .meta-line:last-child { border-bottom: none; }
+  .meta-line .k { color: var(--ink-3); }
+  .meta-line .v { color: var(--ink-1); font-weight: 500; }
+  .rel-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--dai-soft); border-radius: 10px; padding: 8px 12px; font-size: 13px; color: var(--dai); font-weight: 500; }
+  .btn-full {
+    width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: var(--dai); color: #fff; border: none; border-radius: 14px; padding: 14px;
+    font-size: 15px; font-weight: 600; font-family: inherit; cursor: pointer; margin-top: 6px;
+  }
+  .btn-full svg { width: 19px; height: 19px; }
+</style>
+</head>
+<body>
+
+<!-- ============ SVG 图标精灵 ============ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="ic-home" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11l8-7 8 7"/><path d="M6 10v9h12v-9"/><path d="M10 19v-5h4v5"/></g>
+    <g id="ic-timeline" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="7"/><path d="M12 9v4l3 2"/><path d="M5 4h14"/></g>
+    <g id="ic-map" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4l6 2 6-2v14l-6 2-6-2-6 2V6l6-2z"/><path d="M9 4v14M15 6v14"/></g>
+    <g id="ic-user" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5.5 19a6.5 6.5 0 0113 0"/></g>
+    <g id="ic-plus" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 6v12M6 12h12"/></g>
+    <g id="ic-back" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 6l-6 6 6 6"/></g>
+    <g id="ic-gear" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.1"/><path d="M12 3v2.4M12 18.6V21M3 12h2.4M18.6 12H21M5.2 5.2l1.7 1.7M17.1 17.1l1.7 1.7M5.2 18.8l1.7-1.7M17.1 6.9l1.7-1.7"/></g>
+    <g id="ic-bell" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0112 0v4l2 2H4l2-2V9z"/><path d="M10 19a2 2 0 004 0"/></g>
+    <g id="ic-search" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4-4"/></g>
+    <g id="ic-nav" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></g>
+    <g id="ic-edit" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l4-1L19 8l-3-3L5 16l-1 4z"/><path d="M14 6l3 3"/></g>
+    <g id="ic-more" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="0.6"/><circle cx="12" cy="12" r="0.6"/><circle cx="19" cy="12" r="0.6"/></g>
+    <g id="ic-heart" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20s-7-4.6-9-9a4.4 4.4 0 019-2 4.4 4.4 0 019 2c-2 4.4-9 9-9 9z"/></g>
+    <g id="ic-cloud" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 010-8 5 5 0 019-1 3.5 3.5 0 01-1 9H7z"/></g>
+    <g id="ic-lock" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10" width="14" height="9" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></g>
+    <g id="ic-trash" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></g>
+    <g id="ic-link" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15l6-6"/><path d="M10 6l1-1a4 4 0 016 6l-1 1"/><path d="M14 18l-1 1a4 4 0 01-6-6l1-1"/></g>
+    <g id="ic-photo" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M5 17l4.5-4 3 2.5L16 12l3 3"/></g>
+    <g id="ic-chevron" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></g>
+    <g id="ic-family" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><circle cx="16" cy="9" r="2.3"/><path d="M3.5 19a5.5 5.5 0 0111 0M14 19a4.5 4.5 0 018 0"/></g>
+    <g id="ic-tomb" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4a3 3 0 013 3v13H9V7a3 3 0 013-3z"/><path d="M9 20h6"/></g>
+    <g id="ic-dot" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/></g>
+    <g id="ic-signal" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 18a13 13 0 0114 0M8 14a8 8 0 018 0M11 10a3 3 0 014 0"/><circle cx="12" cy="20" r="0.6"/></g>
+    <g id="ic-battery" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="8" width="17" height="8" rx="2"/><path d="M21 11v2"/><path d="M5 10v4" stroke-width="2"/></g>
+  </defs>
+</svg>
+
+<div class="stage">
+
+  <!-- ============ 屏1 家族首页 ============ -->
+  <div class="screen-wrap">
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span class="icons"><svg viewBox="0 0 24 24"><use href="#ic-signal"/></svg><svg viewBox="0 0 24 24"><use href="#ic-battery"/></svg></span></div>
+      <div class="topbar"><span class="tb-title">家族</span><span class="tb-spacer"></span></div>
+      <div class="content scroll">
+        <div class="hero">
+          <div>
+            <div class="h-title">我的墓位</div>
+            <div class="h-num">12 <span style="font-size:15px;font-weight:600;">处</span></div>
+            <div class="h-sub">3 位逝者 · 2 个家族</div>
+          </div>
+          <svg viewBox="0 0 24 24" style="width:34px;height:34px;opacity:.85"><use href="#ic-tomb"/></svg>
+        </div>
+
+        <div class="section-title"><h2>近期祭日</h2><span class="more">查看全部</span></div>
+        <div class="list">
+          <div class="reminder-card">
+            <div class="date-block zhu"><div class="d-day">初三</div><div class="d-lunar">农历七月</div></div>
+            <div class="r-main"><div class="r-name">张氏 · 祖母</div><div class="r-meta">忌日 · 栖霞山公墓</div></div>
+            <div class="r-right"><span class="badge-solid-zhu">今天</span></div>
+          </div>
+          <div class="reminder-card">
+            <div class="date-block zhu"><div class="d-day">初六</div><div class="d-lunar">农历七月</div></div>
+            <div class="r-main"><div class="r-name">李文海 · 祖父</div><div class="r-meta">忌日 · 雨花台功德园</div></div>
+            <div class="r-right"><span class="badge-soft-zhu">3天后</span></div>
+          </div>
+        </div>
+
+        <div class="section-title"><h2>我的家族</h2><span class="more">+ 新建</span></div>
+        <div class="list">
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-family"/></svg></div><div class="body"><div class="t1">李氏家族</div><div class="t2">8 位成员 · 5 处墓地</div></div><div class="chev"><svg viewBox="0 0 24 24"><use href="#ic-chevron"/></svg></div></div>
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-family"/></svg></div><div class="body"><div class="t1">王氏宗族</div><div class="t2">12 位成员 · 7 处墓地</div></div><div class="chev"><svg viewBox="0 0 24 24"><use href="#ic-chevron"/></svg></div></div>
+        </div>
+        <div style="height:140px"></div>
+      </div>
+      <div class="fab"><svg viewBox="0 0 24 24"><use href="#ic-plus"/></svg></div>
+      <div class="tabbar">
+        <div class="tab active"><svg viewBox="0 0 24 24"><use href="#ic-home"/></svg><span>家族</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-timeline"/></svg><span>时序</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-map"/></svg><span>地图</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-user"/></svg><span>我的</span></div>
+      </div>
+    </div>
+    <div class="label">01 · 家族首页</div>
+  </div>
+
+  <!-- ============ 屏2 家族详情 ============ -->
+  <div class="screen-wrap">
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span class="icons"><svg viewBox="0 0 24 24"><use href="#ic-signal"/></svg><svg viewBox="0 0 24 24"><use href="#ic-battery"/></svg></span></div>
+      <div class="topbar">
+        <div class="icon-btn"><svg viewBox="0 0 24 24"><use href="#ic-back"/></svg></div>
+        <span class="tb-title">李氏家族</span><span class="tb-spacer"></span>
+        <div class="icon-btn"><svg viewBox="0 0 24 24"><use href="#ic-edit"/></svg></div>
+      </div>
+      <div class="content scroll">
+        <div class="stat-row">
+          <div class="stat-card"><div class="num">8</div><div class="lbl">位成员</div></div>
+          <div class="stat-card"><div class="num">5</div><div class="lbl">处墓地</div></div>
+        </div>
+        <div class="section-title"><h2>家族墓地</h2><span class="more">管理</span></div>
+        <div class="list">
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-tomb"/></svg></div><div class="body"><div class="t1">栖霞山公墓 · A区12排</div><div class="t2">3 位逝者</div></div><div class="chev"><svg viewBox="0 0 24 24"><use href="#ic-chevron"/></svg></div></div>
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-tomb"/></svg></div><div class="body"><div class="t1">雨花台功德园 · B区5排</div><div class="t2">2 位逝者</div></div><div class="chev"><svg viewBox="0 0 24 24"><use href="#ic-chevron"/></svg></div></div>
+        </div>
+        <div class="section-title"><h2>成员</h2><span class="more">全部</span></div>
+        <div class="list">
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-user"/></svg></div><div class="body"><div class="t1">张远山</div><div class="t2">一世祖</div></div></div>
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-user"/></svg></div><div class="body"><div class="t1">李文海</div><div class="t2">祖父</div></div></div>
+        </div>
+        <div style="height:140px"></div>
+      </div>
+      <div class="tabbar">
+        <div class="tab active"><svg viewBox="0 0 24 24"><use href="#ic-home"/></svg><span>家族</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-timeline"/></svg><span>时序</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-map"/></svg><span>地图</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-user"/></svg><span>我的</span></div>
+      </div>
+    </div>
+    <div class="label">02 · 家族详情</div>
+  </div>
+
+  <!-- ============ 屏3 墓地详情 ============ -->
+  <div class="screen-wrap">
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span class="icons"><svg viewBox="0 0 24 24"><use href="#ic-signal"/></svg><svg viewBox="0 0 24 24"><use href="#ic-battery"/></svg></span></div>
+      <div class="topbar">
+        <div class="icon-btn"><svg viewBox="0 0 24 24"><use href="#ic-back"/></svg></div>
+        <span class="tb-title">栖霞山公墓</span><span class="tb-spacer"></span>
+        <div class="icon-btn"><svg viewBox="0 0 24 24"><use href="#ic-edit"/></svg></div>
+      </div>
+      <div class="content scroll">
+        <div class="person-photo"><svg viewBox="0 0 24 24"><use href="#ic-photo"/></svg></div>
+        <div class="section-title"><h2>安葬人物</h2></div>
+        <div class="list">
+          <div class="row" style="flex-direction:column;align-items:stretch;gap:8px;">
+            <div class="card-title-row">
+              <span class="ct-name">张远山</span>
+              <span class="badge badge-out-dai">合墓</span>
+              <span class="ct-hint">点击编辑</span>
+            </div>
+            <div class="t2" style="font-size:12.5px;color:var(--ink-3);">一世祖 · 生于 1898 · 逝于 1965</div>
+          </div>
+          <div class="row" style="flex-direction:column;align-items:stretch;gap:8px;">
+            <div class="card-title-row">
+              <span class="ct-name">王秀兰</span>
+              <span class="ct-hint">点击编辑</span>
+            </div>
+            <div class="t2" style="font-size:12.5px;color:var(--ink-3);">母亲 · 生于 1932 · 逝于 2009</div>
+          </div>
+        </div>
+        <div class="section-title"><h2>位置信息</h2></div>
+        <div class="card">
+          <div class="meta-line"><span class="k">墓位编号</span><span class="v">A区12排-07</span></div>
+          <div class="meta-line"><span class="k">所属地区</span><span class="v">南京市栖霞区</span></div>
+          <div class="meta-line"><span class="k">坐标</span><span class="v">32.091°N, 118.91°E</span></div>
+        </div>
+        <div style="height:140px"></div>
+      </div>
+      <div class="tabbar">
+        <div class="tab active"><svg viewBox="0 0 24 24"><use href="#ic-home"/></svg><span>家族</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-timeline"/></svg><span>时序</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-map"/></svg><span>地图</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-user"/></svg><span>我的</span></div>
+      </div>
+    </div>
+    <div class="label">03 · 墓地详情</div>
+  </div>
+
+  <!-- ============ 屏4 人物详情 ============ -->
+  <div class="screen-wrap">
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span class="icons"><svg viewBox="0 0 24 24"><use href="#ic-signal"/></svg><svg viewBox="0 0 24 24"><use href="#ic-battery"/></svg></span></div>
+      <div class="topbar">
+        <div class="icon-btn"><svg viewBox="0 0 24 24"><use href="#ic-back"/></svg></div>
+        <span class="tb-title">张远山</span><span class="tb-spacer"></span>
+        <div class="icon-btn"><svg viewBox="0 0 24 24"><use href="#ic-more"/></svg></div>
+      </div>
+      <div class="content scroll">
+        <div class="card" style="margin-bottom:14px;">
+          <div class="card-title-row"><span class="ct-name">生平</span></div>
+          <div class="bio-text">张远山，李氏一世祖，生于清光绪二十四年，卒于公元一九六五年。平生务农持家，德厚流光，泽被后世，子孙繁衍。</div>
+        </div>
+        <div class="card" style="margin-bottom:14px;">
+          <div class="card-title-row"><span class="ct-name">墓志</span></div>
+          <div class="bio-text">德厚流光，泽被后世。</div>
+        </div>
+        <div class="card" style="margin-bottom:14px;">
+          <div class="card-title-row"><span class="ct-name">亲属关系</span></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;"><span class="rel-chip">配偶 · 王氏</span><span class="rel-chip">子 · 张建国</span><span class="rel-chip">父 · 张德海</span></div>
+        </div>
+        <div class="card" style="margin-bottom:14px;">
+          <div class="card-title-row"><span class="ct-name">忌日</span></div>
+          <div class="meta-line"><span class="k">农历</span><span class="v">七月初三</span></div>
+          <div class="meta-line"><span class="k">公历</span><span class="v">8 月 15 日</span></div>
+          <div class="meta-line"><span class="k">墓位</span><span class="v">栖霞山公墓 A区12排</span></div>
+        </div>
+        <button class="btn-full"><svg viewBox="0 0 24 24"><use href="#ic-link"/></svg>关联人物</button>
+        <div style="height:150px"></div>
+      </div>
+      <div class="tabbar">
+        <div class="tab active"><svg viewBox="0 0 24 24"><use href="#ic-home"/></svg><span>家族</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-timeline"/></svg><span>时序</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-map"/></svg><span>地图</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-user"/></svg><span>我的</span></div>
+      </div>
+    </div>
+    <div class="label">04 · 人物详情</div>
+  </div>
+
+  <!-- ============ 屏5 时序 ============ -->
+  <div class="screen-wrap">
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span class="icons"><svg viewBox="0 0 24 24"><use href="#ic-signal"/></svg><svg viewBox="0 0 24 24"><use href="#ic-battery"/></svg></span></div>
+      <div class="topbar"><span class="tb-title">时序</span><span class="tb-spacer"></span><div class="icon-btn"><svg viewBox="0 0 24 24"><use href="#ic-bell"/></svg></div></div>
+      <div class="content scroll">
+        <div class="list">
+          <div class="reminder-card">
+            <div class="date-block zhu"><div class="d-day">初三</div><div class="d-lunar">农历七月</div></div>
+            <div class="r-main"><div class="r-name">张氏 · 祖母</div><div class="r-meta">忌日 · 农历七月初三 · 栖霞山公墓</div></div>
+            <div class="r-right"><span class="badge-solid-zhu">今天</span></div>
+          </div>
+          <div class="reminder-card">
+            <div class="date-block zhu"><div class="d-day">初六</div><div class="d-lunar">农历七月</div></div>
+            <div class="r-main"><div class="r-name">李文海 · 祖父</div><div class="r-meta">忌日 · 农历七月初六 · 雨花台功德园</div></div>
+            <div class="r-right"><span class="badge-soft-zhu">3天后</span></div>
+          </div>
+          <div class="reminder-card">
+            <div class="date-block dai"><div class="d-day">初五</div><div class="d-lunar">农历五月</div></div>
+            <div class="r-main"><div class="r-name">端午节</div><div class="r-meta">传统节日 · 农历五月初五 · 踏青祭祖</div></div>
+            <div class="r-right"><span class="badge-out-dai">节日</span></div>
+          </div>
+          <div class="reminder-card">
+            <div class="date-block dai"><div class="d-day">十五</div><div class="d-lunar">农历七月</div></div>
+            <div class="r-main"><div class="r-name">中元节</div><div class="r-meta">传统节日 · 农历七月十五 · 19天后</div></div>
+            <div class="r-right"><span class="badge-out-dai">19天后</span></div>
+          </div>
+        </div>
+        <div style="height:150px"></div>
+      </div>
+      <div class="fab"><svg viewBox="0 0 24 24"><use href="#ic-plus"/></svg></div>
+      <div class="tabbar">
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-home"/></svg><span>家族</span></div>
+        <div class="tab active"><svg viewBox="0 0 24 24"><use href="#ic-timeline"/></svg><span>时序</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-map"/></svg><span>地图</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-user"/></svg><span>我的</span></div>
+      </div>
+    </div>
+    <div class="label">05 · 时序</div>
+  </div>
+
+  <!-- ============ 屏6 地图 ============ -->
+  <div class="screen-wrap">
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span class="icons"><svg viewBox="0 0 24 24"><use href="#ic-signal"/></svg><svg viewBox="0 0 24 24"><use href="#ic-battery"/></svg></span></div>
+      <div class="topbar">
+        <span class="tb-title">地图</span><span class="tb-spacer"></span>
+        <div class="icon-btn"><svg viewBox="0 0 24 24"><use href="#ic-nav"/></svg></div>
+        <div class="icon-btn"><svg viewBox="0 0 24 24"><use href="#ic-search"/></svg></div>
+      </div>
+      <div class="content scroll">
+        <div class="map-area">
+          <svg viewBox="0 0 350 300" preserveAspectRatio="xMidYMid slice">
+            <rect width="350" height="300" fill="#EAF1EE"/>
+            <path d="M0 60 Q90 40 160 70 T350 60 V0 H0 Z" fill="#D7E8F0"/>
+            <path d="M210 120 Q280 130 300 200 Q260 250 210 230 Q200 170 210 120 Z" fill="#DCE9D8"/>
+            <path d="M0 150 H350" stroke="#CFD8D2" stroke-width="10"/>
+            <path d="M120 0 V300" stroke="#CFD8D2" stroke-width="10"/>
+            <path d="M0 230 H350" stroke="#E3E9E3" stroke-width="6"/>
+            <path d="M250 0 V300" stroke="#E3E9E3" stroke-width="6"/>
+            <path d="M40 40 H150" stroke="#fff" stroke-width="2" opacity=".6"/>
+          </svg>
+          <div class="marker" style="left:30%;top:42%;">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M12 2C7.6 2 4 5.6 4 10c0 5.2 7 11 8 11s8-5.8 8-11c0-4.4-3.6-8-8-8z" fill="#35525E"/><circle cx="12" cy="10" r="3" fill="#fff"/></svg>
+          </div>
+          <div class="marker" style="left:62%;top:58%;">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M12 2C7.6 2 4 5.6 4 10c0 5.2 7 11 8 11s8-5.8 8-11c0-4.4-3.6-8-8-8z" fill="#35525E"/><circle cx="12" cy="10" r="3" fill="#fff"/></svg>
+          </div>
+        </div>
+        <div class="section-title"><h2>我的墓地</h2></div>
+        <div class="list">
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-map"/></svg></div><div class="body"><div class="t1">栖霞山公墓</div><div class="t2">3 位逝者 · 距您 2.4km</div></div><div class="chev"><svg viewBox="0 0 24 24"><use href="#ic-chevron"/></svg></div></div>
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-map"/></svg></div><div class="body"><div class="t1">雨花台功德园</div><div class="t2">2 位逝者 · 距您 6.1km</div></div><div class="chev"><svg viewBox="0 0 24 24"><use href="#ic-chevron"/></svg></div></div>
+        </div>
+        <div style="height:140px"></div>
+      </div>
+      <div class="fab"><svg viewBox="0 0 24 24"><use href="#ic-plus"/></svg></div>
+      <div class="tabbar">
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-home"/></svg><span>家族</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-timeline"/></svg><span>时序</span></div>
+        <div class="tab active"><svg viewBox="0 0 24 24"><use href="#ic-map"/></svg><span>地图</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-user"/></svg><span>我的</span></div>
+      </div>
+    </div>
+    <div class="label">06 · 地图</div>
+  </div>
+
+  <!-- ============ 屏7 添加墓地 ============ -->
+  <div class="screen-wrap">
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span class="icons"><svg viewBox="0 0 24 24"><use href="#ic-signal"/></svg><svg viewBox="0 0 24 24"><use href="#ic-battery"/></svg></span></div>
+      <div class="topbar">
+        <div class="icon-btn"><svg viewBox="0 0 24 24"><use href="#ic-back"/></svg></div>
+        <span class="tb-title">添加墓地</span><span class="tb-spacer"></span>
+      </div>
+      <div class="content scroll" style="bottom:0;">
+        <div class="cover-zone">
+          <svg viewBox="0 0 24 24"><use href="#ic-photo"/></svg>
+          <span>添加封面照片</span>
+        </div>
+        <div class="field"><label>公墓名称</label><input placeholder="如：栖霞山公墓" /></div>
+        <div class="field"><label>所属地区</label><input placeholder="如：南京市栖霞区" /></div>
+        <div class="field"><label>墓位编号</label><input placeholder="如：A区12排-07" /></div>
+        <div class="field"><label>位置坐标</label>
+          <div class="pick-row">
+            <button class="locate-btn primary">地图选点</button>
+            <button class="locate-btn">使用当前定位</button>
+          </div>
+        </div>
+        <div class="privacy">
+          <svg viewBox="0 0 24 24"><use href="#ic-lock"/></svg>
+          <span>位置仅记录坐标与公墓名称，不会上传任何逝者隐私信息。</span>
+        </div>
+        <button class="btn-primary-block">保存墓地</button>
+        <div style="height:40px"></div>
+      </div>
+    </div>
+    <div class="label">07 · 添加墓地</div>
+  </div>
+
+  <!-- ============ 屏8 我的 ============ -->
+  <div class="screen-wrap">
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span class="icons"><svg viewBox="0 0 24 24"><use href="#ic-signal"/></svg><svg viewBox="0 0 24 24"><use href="#ic-battery"/></svg></span></div>
+      <div class="topbar"><span class="tb-title">我的</span><span class="tb-spacer"></span><div class="icon-btn"><svg viewBox="0 0 24 24"><use href="#ic-gear"/></svg></div></div>
+      <div class="content scroll">
+        <div class="account-card">
+          <div class="avatar"><svg viewBox="0 0 24 24"><use href="#ic-user"/></svg></div>
+          <div class="a-body">
+            <div class="a-name">访客用户 <span class="badge-pill-dai">L0 · 访客</span></div>
+            <div class="a-sub">登录后同步家谱</div>
+          </div>
+          <div class="chev"><svg viewBox="0 0 24 24"><use href="#ic-chevron"/></svg></div>
+        </div>
+        <div class="section-title"><h2>数据与隐私</h2></div>
+        <div class="list">
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-cloud"/></svg></div><div class="body"><div class="t1">数据备份</div><div class="t2">本地 / 云端同步</div></div><div class="chev"><svg viewBox="0 0 24 24"><use href="#ic-chevron"/></svg></div></div>
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-lock"/></svg></div><div class="body"><div class="t1">加密与隐私</div><div class="t2">端到端加密设置</div></div><div class="chev"><svg viewBox="0 0 24 24"><use href="#ic-chevron"/></svg></div></div>
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-nav"/></svg></div><div class="body"><div class="t1">GPS 定位说明</div><div class="t2">位置使用方式</div></div><div class="chev"><svg viewBox="0 0 24 24"><use href="#ic-chevron"/></svg></div></div>
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-heart"/></svg></div><div class="body"><div class="t1">关于族迹</div><div class="t2">版本与致谢</div></div><div class="chev"><svg viewBox="0 0 24 24"><use href="#ic-chevron"/></svg></div></div>
+          <div class="row"><div class="ic"><svg viewBox="0 0 24 24"><use href="#ic-trash"/></svg></div><div class="body"><div class="t1">清除缓存</div><div class="t2">释放本地空间</div></div><div class="chev"><svg viewBox="0 0 24 24"><use href="#ic-chevron"/></svg></div></div>
+        </div>
+        <div style="height:150px"></div>
+      </div>
+      <div class="tabbar">
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-home"/></svg><span>家族</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-timeline"/></svg><span>时序</span></div>
+        <div class="tab"><svg viewBox="0 0 24 24"><use href="#ic-map"/></svg><span>地图</span></div>
+        <div class="tab active"><svg viewBox="0 0 24 24"><use href="#ic-user"/></svg><span>我的</span></div>
+      </div>
+    </div>
+    <div class="label">08 · 我的</div>
+  </div>
+
+</div>
+</body>
+</html>
