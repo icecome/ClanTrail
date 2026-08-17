@@ -1,4 +1,4 @@
-import type { Grave } from '../types';
+import type { Tomb } from '../types';
 import { isTauri } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { wgs84togcj02 } from './coord';
@@ -14,7 +14,7 @@ export const MAP_PROVIDERS: { id: MapProvider; name: string }[] = [
 /**
  * 构造各地图厂商的导航 URI（均仅传递坐标 + 地名，不携带逝者信息）。
  */
-function buildMapUri(provider: MapProvider, grave: Pick<Grave, 'name' | 'latitude' | 'longitude'>): string {
+function buildMapUri(provider: MapProvider, grave: Pick<Tomb, 'name' | 'latitude' | 'longitude'>): string {
   const name = encodeURIComponent(grave.name || '墓地');
   // 数据库存 WGS84，高德/腾讯/百度调起统一转 GCJ-02（百度 coord_type=gcj02 由其内部转 BD-09）
   const [lng, lat] = wgs84togcj02(grave.longitude, grave.latitude);
@@ -36,7 +36,7 @@ function buildMapUri(provider: MapProvider, grave: Pick<Grave, 'name' | 'latitud
  * 唤起对应地图 App（未安装时由系统/浏览器兜底）。非 Tauri 环境回退 window.open。
  */
 export async function openExternalMap(
-  grave: Pick<Grave, 'name' | 'latitude' | 'longitude'>,
+  grave: Pick<Tomb, 'name' | 'latitude' | 'longitude'>,
   provider: MapProvider = 'amap',
 ): Promise<void> {
   const url = buildMapUri(provider, grave);

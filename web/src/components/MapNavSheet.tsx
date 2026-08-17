@@ -1,11 +1,11 @@
-import type { Grave } from '../types';
+import type { Tomb } from '../types';
 import BottomSheet from './BottomSheet';
 import { useToast } from './Toast';
 import { MAP_PROVIDERS, type MapProvider, openExternalMap } from '../utils/navigation';
 
 interface Props {
   open: boolean;
-  tomb: Pick<Grave, 'name' | 'latitude' | 'longitude'> | null;
+  tomb: Pick<Tomb, 'name' | 'latitude' | 'longitude'> | null;
   onClose: () => void;
 }
 

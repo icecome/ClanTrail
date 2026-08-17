@@ -8,14 +8,6 @@ import MapPage from './pages/MapPage';
 import AddGravePage from './pages/AddGravePage';
 import SettingsPage from './pages/SettingsPage';
 import MemberFormPage from './pages/MemberFormPage';
-import MemberDetailPage from './pages/MemberDetailPage';
-import BackupPage from './pages/BackupPage';
-import PrivacyPage from './pages/PrivacyPage';
-import GpsPage from './pages/GpsPage';
-import AboutPage from './pages/AboutPage';
-import MemberListPage from './pages/MemberListPage';
-import MemberDirectPage from './pages/MemberDirectPage';
-import GraphPage from './pages/GraphPage';
 import { ToastProvider } from './components/Toast';
 
 // ---------- 线性图标（设计系统 24 图标集子集） ----------
@@ -101,22 +93,13 @@ export default function App() {
           <Routes>
             <Route path="/" element={<ClanListPage />} />
             <Route path="/clans/:id" element={<ClanDetailPage />} />
-            <Route path="/clans/:id/members" element={<MemberListPage />} />
-            <Route path="/clans/:id/graph" element={<GraphPage />} />
-            <Route path="/graph/:memberId" element={<GraphPage />} />
-            <Route path="/member/:pid/view" element={<MemberDirectPage />} />
             <Route path="/member/:pid/edit" element={<MemberFormPage />} />
             <Route path="/grave/new" element={<AddGravePage />} />
             <Route path="/grave/:id/edit" element={<AddGravePage />} />
             <Route path="/grave/:id" element={<GraveDetailPage />} />
             <Route path="/grave/:id/member/:pid" element={<MemberFormPage />} />
-            <Route path="/grave/:id/member/:pid/view" element={<MemberDetailPage />} />
             <Route path="/reminders" element={<RemindersPage />} />
             <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/settings/backup" element={<BackupPage />} />
-            <Route path="/settings/privacy" element={<PrivacyPage />} />
-            <Route path="/settings/gps" element={<GpsPage />} />
-            <Route path="/settings/about" element={<AboutPage />} />
             <Route path="/map" element={<MapPage />} />
           </Routes>
         </main>
